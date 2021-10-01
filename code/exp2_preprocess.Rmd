@@ -1,0 +1,320 @@
+---
+title: "exp2_preprocess"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## import
+```{r message=FALSE, results='hide'}
+library(knitr)
+library(tidyverse)
+
+# fnames = list.files(path='../data/test/', pattern='ver2_beta_pilot_sandbox*', full.names=T) # sandbox
+# fnames = list.files(path='../data/ver2_pilot/', pattern='MinPath_ver2_pilot_*', full.names=T) # pilot
+fnames = list.files(path='../data/ver2/', pattern='MinPath_ver2*', full.names=T) # experiment
+foutname = '../data/exp2_tidy'
+```
+
+## load and tidy data
+``` {r}
+data = do.call(rbind, lapply(fnames, function(f){read.csv(f, 
+                                                          header=TRUE, 
+                                                          sep=",", 
+                                                          stringsAsFactors = FALSE)}))
+N = nrow(data)
+
+data = data %>%
+  # assign subject id
+  mutate(subject = 1:N) %>%
+  # extract experiment relevant columns
+  select(subject, starts_with('Answer.')) %>%
+  # rename columns
+  rename_at(vars(starts_with('Answer.')), list(~str_replace(., 'Answer.', '')))
+
+data.survey = data %>%
+  select('subject', 'totalBonus', starts_with('q')) %>%
+  mutate_at('totalBonus', as.numeric) %>%
+  mutate_at(c('q1', 'q3', 'q5', 'q6', 'q7', 'q8', 'q9', 'q10'), 
+            ~factor(., levels=c('never','rarely','sometimes','often','always')))
+
+data = data %>%
+  select(-starts_with('q')) %>%
+  filter(totalBonus != '{}') # didn't finish experiment
+```
+
+## check orientation group sizes
+``` {r}
+data = data %>%
+  group_by(subject) %>%
+  mutate(sideGroup = strsplit(side, ',')[[1]][1]) %>% # extract orientation on the first trial
+  mutate(sideGroup = ifelse(sideGroup %in% c('east','west'), 'east/west',
+                            'north/south')) %>%
+  ungroup()
+
+cat('east/west   N =', data %>% filter(sideGroup=='east/west') %>% nrow(),
+    '\nnorth/south N =', data %>% filter(sideGroup=='north/south') %>% nrow())
+
+cat('\nno counting N =', data.survey %>% filter(q1 %in% c('never', 'rarely')) %>% nrow(),
+    '\ncounting    N =', data.survey %>% filter(q1 %in% c('sometimes', 'often', 'always')) %>% nrow())
+```
+
+## expand to trial level
+``` {r}
+# split 1d arrays
+colnames1 = c('trialIndex', 'level', 'side',
+              'agentIniLoc', 'goalLoc',
+              'optimStep', 'totalStep', 'bonus',
+              'startTime', 'startRT', 'endRT');
+t1 = data %>% 
+  separate_rows(colnames1, sep=',') %>% 
+  select(subject, totalBonus, colnames1) # include three non-expandable columns
+
+# split 2d arrays
+colnames2 = c('subgoalLoc',
+              'actionSeq', 'actionSeqStr', 'actionSeqEffect', 
+              'actionSeqTime', 'actionSeqRT')
+t2 = data %>%
+  separate_rows(colnames2, sep='\\[|\\],\\[|\\]') %>%
+  filter(actionSeq!='') %>% # remove the first and last row due to regex
+  select(colnames2)
+
+# combine t1 and t2
+data = cbind(t1, t2) # bind by columns
+remove(t1, t2)
+```
+
+## numeric cast and bonus-based exclusion
+``` {r}
+# convert some numeric columns from character columns
+# reorder columns
+numeric.cols = c('totalBonus', 'trialIndex', 'agentIniLoc', 'goalLoc',
+                 'optimStep', 'totalStep', 'bonus', 
+                 'startTime', 'startRT', 'endRT')
+
+data = data %>%
+  mutate_at(numeric.cols, as.numeric)
+
+# !note: the original experiment encoded west/east sides as opposite, 
+# labeling trials where the agent starts from the left side as the east trials instead.
+# correcting that here
+data = data %>%
+  rename(sideDeprecated=side) %>%
+  mutate(side=ifelse(sideDeprecated=='west','east',
+              ifelse(sideDeprecated=='east','west',
+                     sideDeprecated)))
+```
+
+## save tidy data
+``` {r}
+write.csv(data, paste(foutname,'.csv', sep=''))
+write.csv(data.survey, paste(foutname, '_survey.csv', sep=''))
+```
+
+## Expand to step level
+``` {r}
+data = data %>%
+  separate_rows('actionSeq', 'actionSeqStr', 'actionSeqEffect', 
+                'actionSeqTime', 'actionSeqRT',
+                sep=',') %>%
+  group_by(subject, trialIndex) %>%
+  mutate(step = 1:n()) %>%
+  ungroup() %>%
+  select(subject, trialIndex, level, step, everything()) %>%
+  rename(action=actionSeq, actionStr=actionSeqStr,actionEffect=actionSeqEffect, 
+         actionTime=actionSeqTime, actionRT=actionSeqRT) %>%
+  mutate_at('actionEffect', as.logical) %>%
+  mutate_at(c('actionTime', 'actionRT'), as.numeric)
+
+data = data %>%
+  # convert actions to canonical actions 
+  # use west orientation as the reference orientation
+  # !corrected for the mislabeled east/west sides
+  mutate(canonicalUp = ((side=='west')&(actionStr=='up')) |
+                       ((side=='north')&(actionStr=='right')) |
+                       ((side=='east')&(actionStr=='down')) |
+                       ((side=='south')&(actionStr=='left')),
+         canonicalDown = ((side=='west')&(actionStr=='down')) |
+                       ((side=='north')&(actionStr=='left')) |
+                       ((side=='east')&(actionStr=='up')) |
+                       ((side=='south')&(actionStr=='right')),
+         canonicalLeft = ((side=='west')&(actionStr=='left')) |
+                       ((side=='north')&(actionStr=='up')) |
+                       ((side=='east')&(actionStr=='right')) |
+                       ((side=='south')&(actionStr=='down')),
+         canonicalRight = ((side=='west')&(actionStr=='right')) |
+                       ((side=='north')&(actionStr=='down')) |
+                       ((side=='east')&(actionStr=='left')) |
+                       ((side=='south')&(actionStr=='up'))) %>%
+  mutate(canonicalActionStr = ifelse(canonicalUp, 'up',
+                              ifelse(canonicalDown, 'down',
+                              ifelse(canonicalLeft, 'left',
+                              ifelse(canonicalRight, 'right', 'n/a'))))) %>%
+  select(-canonicalUp, -canonicalDown, -canonicalLeft, -canonicalRight)
+```
+
+## Fold back
+``` {r}
+data = data %>%
+  nest(steps=c('step','action', 'actionStr', 'canonicalActionStr',
+               'actionEffect', 'actionTime', 'actionRT'))
+```
+
+# ----------- add additional columns -----------
+
+## filter trials
+``` {r}
+data = data %>%
+  filter(level != 'prac')
+```
+
+## extract planning time
+``` {r}
+data = data %>%
+  unnest(steps) %>%
+  group_by(subject, trialIndex) %>%
+  mutate(planningTime = actionRT[which(!is.na(actionRT))[1]]) %>%
+  ungroup() %>%
+  nest(steps=c('step', 'action', 'actionStr', 'canonicalActionStr',
+               'actionEffect', 'actionTime', 'actionRT'))
+```
+
+## Plotting planning time distributions
+``` {r}
+
+c = sunset[1]
+
+data %>%
+  mutate(planningTime = planningTime/1000.0) %>%
+  ggplot(data = .,
+         mapping = aes(x=planningTime, group=subject)) +
+  geom_density(color='black', fill=c, alpha=0.6) +
+  scale_x_log10() +
+  labs(x='Planning Time (s)')
+```
+
+## exclude ineffective steps and add some useful action columns
+``` {r}
+data = data %>%
+  unnest(steps) %>%
+  filter(actionEffect) %>%
+  group_by(subject, trialIndex) %>%
+  mutate(step = 1:n()) %>% # recode step index after removing ineffective steps
+  mutate(upDownAction = canonicalActionStr %in% c('up','down'),
+         firstRightStep = which(canonicalActionStr=='right')[1],
+         lastRightStep = tail(which(canonicalActionStr=='right'),1)) %>%
+  mutate(firstAction = canonicalActionStr[1],
+         lastAction = ifelse(level=='base',
+                             tail(canonicalActionStr, 1),
+                             # the last action before subgoal is the last up/down action before the last series of horizontal actions
+                             # note the index for lastRightStep: lastRightStep is a trial-level var and the data frame now is step-level
+                             canonicalActionStr[tail(which(upDownAction[1:lastRightStep[1]]),1)])) %>%
+  dplyr::select(-upDownAction) %>% # only a convenience column
+  ungroup() %>%
+  nest(steps=c('step', 'action', 'actionStr', 'canonicalActionStr',
+               'actionEffect', 'actionTime', 'actionRT'))
+```
+
+## detect path start/end
+``` {r}
+data = data %>%
+  unnest(steps) %>%
+  # finally! create variables indicating the path the subject took to 
+  # move the sprite initially and to approach the goal
+  group_by(subject, trialIndex) %>%
+  # when detecting path start, we use the last action before turning right
+  # for path end, we use the last step to reach the goal/subgoal
+  mutate(pathStart = ifelse(canonicalActionStr[firstRightStep-1]=='up',
+                            'upper',
+                     ifelse(canonicalActionStr[firstRightStep-1]=='down',
+                            'lower',
+                            'other')),
+         pathEnd = ifelse(lastAction == 'down',
+                          'upper',
+                   ifelse(lastAction == 'up',
+                          'lower',
+                          'other')),
+         pathTaken = ifelse( (pathStart=='upper')&(pathEnd=='upper'),
+                             'upper',
+                     ifelse( (pathStart=='lower')&(pathEnd=='lower'),
+                             'lower',
+                             'other'))) %>%
+  # add a column indicating change of plan at the start of the trial
+  # we want to compare the first action and pathStart (ver2 has no overshooting)
+  mutate(pathStartChange = ifelse( ((firstAction=='down') & (pathStart=='upper')) |
+                                   ((firstAction=='up') & (pathStart=='lower')),
+                                   T,
+                                   F)) %>%
+  ungroup() %>%
+  nest(steps=c('step', 'action', 'actionStr', 'canonicalActionStr',
+               'actionEffect', 'actionTime', 'actionRT'))
+```
+
+## split data
+### split main and ms data
+``` {r}
+data.main = data %>%
+  filter(level %in% c('base', 'subgoal'))
+
+data.ms = data %>%
+  filter(level %in% c('multisubgoal', 'mscontrol'))
+```
+
+## base and subgoal trials
+
+### add advantage types
+``` {r}
+data.main = data.main %>%
+  mutate(subgoalLoc=as.numeric(subgoalLoc)) %>%
+  mutate(performance = ifelse(bonus==0.03,
+                              'optimal', 
+                              'nonoptimal'),
+         # compute myopic advantage
+         myopicQuantAdv = agentIniLoc-5, # wall center is always 5
+         myopicAdvPath = ifelse(myopicQuantAdv<0,  
+                                'upper',
+                         ifelse(myopicQuantAdv==0, 
+                                'neutral', 
+                                'lower')),
+         # compute future advantage
+         futureQuantAdv = ifelse(level=='base',
+                                 goalLoc-5,
+                                 subgoalLoc-5),
+         futureAdvPath = ifelse(futureQuantAdv<0,
+                                'upper',
+                         ifelse(futureQuantAdv==0,
+                                'neutral',
+                                'lower')),
+         # compute total advantage steps and path
+         totalAdv = (myopicQuantAdv + futureQuantAdv) * 2,
+         totalAdvSteps = abs(totalAdv),
+         totalAdvPath = ifelse(totalAdv<0, 
+                               'upper',
+                        ifelse(totalAdv==0, 
+                               'neutral',
+                               'lower')),
+         # compute trial type based on myopic/goal local advantage congruence
+         trialAdvType = ifelse((myopicAdvPath=='neutral')&(futureAdvPath=='neutral'),
+                               'NT',
+                        ifelse((myopicAdvPath!='neutral')&(futureAdvPath=='neutral'),
+                               'MA', 
+                        ifelse((myopicAdvPath=='neutral')&(futureAdvPath!='neutral'),
+                               'FA',
+                        ifelse(((myopicAdvPath=='upper')&(futureAdvPath=='upper')) |
+                               ((myopicAdvPath=='lower')&(futureAdvPath=='lower')),
+                               'CA', 
+                               'IA')))))
+
+# !note: reversing advantage coding so positive=upper (more intuitive)
+data.main = data.main %>%
+  mutate(myopicQuantAdv=-myopicQuantAdv,
+         futureQuantAdv=-futureQuantAdv,
+         totalAdv=-totalAdv)
+```
+
+## save augmented data
+``` {r}
+saveRDS(data.main, paste(foutname,'_main.RData',sep=''))
+saveRDS(data.ms, paste(foutname,'_ms.RData',sep=''))
+```

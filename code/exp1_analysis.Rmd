@@ -1,0 +1,1059 @@
+---
+title: "exp1_analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## import
+```{r message=FALSE, results='hide'}
+library(knitr)
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(emmeans)
+library(ggeffects)
+library(LaplacesDemon)
+library(patchwork)
+library(rtdists)
+library(modelr)
+library(gamlss.dist)
+library(gamlss)
+library(parameters)
+
+theme_set(theme_classic() +
+          theme(axis.text=element_text(size=10)) +
+          theme(axis.title=element_text(size=12)) +
+          theme(panel.background = element_rect(fill = "transparent")) +
+          theme(plot.background = element_rect(fill = "transparent")))
+
+finname = '../data/exp1_tidy'
+plotout = '../plots/exp1/'
+
+redblue = c('#F6B190', '#DF7C6A', '#BE364A', '#91C5DF', '#1B64AE')
+```
+
+## read augmented data
+``` {r}
+data = readRDS(paste(finname,'_augmented.RData',sep=''))
+data.survey = read.csv(paste(finname, '_survey.csv', sep=''))
+```
+
+## exclude trials
+``` {r}
+data = data %>%
+  # trials with exceedingly long planning time (n=6)
+  filter(planningTime<60000) %>%
+  # remove trials solved with 4+ steps than the longer canonical solution (n=10)
+  filter(totalStep <= (optimStep + totalAdvSteps + 4)) %>%
+  # trials with ill-identified path start (n=31: n=15 pathTaken=='other', n=12 pathStartChange==T, n=4 overlap with first exclusion)
+  filter(pathTaken!='other', pathStartChange==F)
+```
+
+```{r}
+data = data %>%
+  mutate(relativeAdv = abs(myopicQuantAdv) - abs(futureQuantAdv)) %>%
+  # rename some trial types
+  mutate(trialAdvType = ifelse(trialAdvType=='MA', 'SA-m', trialAdvType)) %>%
+  mutate(trialAdvType = ifelse(trialAdvType=='FA', 'SA-f', trialAdvType)) %>%
+  mutate(trialAdvType = ifelse( (trialAdvType=='IA') & (relativeAdv<0),
+                               'IA-f',
+                               trialAdvType)) %>%
+  mutate(trialAdvType = ifelse( (trialAdvType=='IA') & (relativeAdv>0),
+                               'IA-m',
+                               trialAdvType)) %>%
+  mutate(trialAdvType = factor(trialAdvType, level=c('NT', 'SA-m', 'SA-f', 'CA', 'IA', 'IA-m', 'IA-f')))
+```
+
+# accuracy groups
+```{r}
+# seprarate fit for participants with top half accuracy and bottom half accuracy
+# fast error RT seems to be a between-participant characteristic coming form the 
+# bottom half participants, so it's good to demonstrate how that results in different 
+# fits in supplementary info
+top_half = data %>%
+  filter(totalAdv!=0) %>%
+  group_by(subject) %>%
+  summarise(optimal=mean(pathStart==totalAdvPath)) %>% 
+  filter(optimal >= median(optimal)) %>% 
+  pull(subject)
+```
+
+## optimality and planning time in all trials by trial total advantage (path len diff)
+```{r}
+p1 = data %>%
+  # filter(! subject %in% top_half) %>%
+  filter(totalAdv==0) %>% # NT and IA-equal trials
+  mutate(totalAdv=factor(abs(totalAdv)),
+         myopicQuantAdv=factor(abs(myopicQuantAdv), levels=c(0,1,2))) %>%
+  mutate(trialAdvType=as.character(trialAdvType)) %>%
+  mutate(trialAdvType=ifelse(trialAdvType=='IA', paste(trialAdvType,myopicQuantAdv,sep='-'),
+                             trialAdvType)) %>%
+  mutate(trialAdvType=factor(trialAdvType, levels=c('NT','IA-1','IA-2'))) %>%
+  mutate(pathFavorsMyopicAdv = ifelse(trialAdvType=='NT',
+                                      0.5, # ipso facto
+                                      as.numeric(pathStart==myopicAdvPath))) %>%
+  group_by(subject, totalAdv, trialAdvType) %>%
+  summarize(pathFavorsMyopicAdv=mean(pathFavorsMyopicAdv)) %>%
+  mutate(pathFavorsMyopicAdvProbit = qnorm(pathFavorsMyopicAdv)) %>%
+  mutate(pathFavorsMyopicAdvProbit = ifelse(pathFavorsMyopicAdvProbit > 3, 3,  # cap infs
+                                            pathFavorsMyopicAdvProbit)) %>%
+  mutate(pathFavorsMyopicAdvProbit = ifelse(pathFavorsMyopicAdvProbit < -3, -3,  # cap infs
+                                            pathFavorsMyopicAdvProbit)) %>%
+  ggplot(., mapping=aes(x=totalAdv, y=pathFavorsMyopicAdvProbit, 
+                        color=trialAdvType, shape=trialAdvType)) +
+  stat_summary(fun.data = "mean_cl_boot",
+               geom = "pointrange",
+               fill = 'white',
+               position = position_dodge(width=0.2),
+               size = .5) +
+  labs(x='Total Path Difference',
+       y='Path Favors Myopic Advantage\n(probit space)',
+       tag='A') +
+  scale_color_manual(labels=c('NT','IA(|mAdv|=1)','IA(|mAdv|=2)'),
+                    values=c('black', redblue[4], redblue[5]),
+                    name='Adv. Type') +
+  scale_shape_manual(labels=c('NT','IA(|mAdv|=1)','IA(|mAdv|=2)'),
+                     values=c(24,22,22),
+                     name='Adv. Type') +
+  coord_cartesian(ylim=c(0, 3)) +
+  theme(legend.position='none')
+```
+
+```{r}
+# optimal direction descriptive stats
+x = data %>%
+  filter(totalAdv!=0) %>%
+  group_by(subject) %>%
+  summarise(optimal=mean(pathStart==totalAdvPath)) %>%
+  ungroup() %>%
+  summarize(xmean=mean(optimal),
+            xmin=min(optimal),
+            xmax=max(optimal))
+#   xmean  xmin  xmax
+#   <dbl> <dbl> <dbl>
+# 1 0.916 0.492     1
+
+p2 = data %>%
+  # filter(! subject %in% top_half) %>%
+  filter(totalAdv!=0) %>%
+  mutate(absTotalAdv=factor(abs(totalAdv))) %>%
+  group_by(subject, absTotalAdv, trialAdvType) %>%
+  summarise(optimal=mean(pathStart==totalAdvPath)) %>%
+  mutate(optimalProbit = qnorm(optimal)) %>%
+  mutate(optimalProbit = ifelse(optimalProbit > 3, 3,  # cap infs
+                                optimalProbit)) %>%
+  mutate(optimalProbit = ifelse(optimalProbit < -3, -3,  # cap infs
+                                optimalProbit)) %>%
+  ggplot(., mapping=aes(x=absTotalAdv, y=optimalProbit, 
+                        fill=trialAdvType, shape=trialAdvType)) +
+  stat_summary(fun.data = "mean_cl_boot",
+               geom = "pointrange",
+               color = 'black',
+               position = position_dodge(width=0.3),
+               size = .5) +
+  labs(x='Total Path Difference',
+      y='Optimal Direction\n(probit space)',
+      tag='B') +
+  scale_fill_manual(values=c(redblue[5], redblue[2], 'white', redblue[5], redblue[2]),
+                    name='Adv. Type') +
+  scale_shape_manual(values=c(21,21,23,22,22),
+                    name='Adv. Type') +
+  coord_cartesian(ylim=c(0, 3)) +
+  theme(legend.position='none')
+```
+
+```{r}
+p3 = data %>%
+  # filter(! subject %in% top_half) %>%
+  mutate(totalAdv=factor(abs(totalAdv)),
+         myopicQuantAdv=factor(abs(myopicQuantAdv), levels=c(0,1,2))) %>%
+  mutate(trialAdvType=as.character(trialAdvType)) %>%
+  mutate(trialAdvType=ifelse(trialAdvType=='IA', paste(trialAdvType,myopicQuantAdv,sep='-'),
+                             trialAdvType)) %>%
+  mutate(trialAdvType=factor(trialAdvType, levels=c('NT','IA-1','IA-2','SA-m','SA-f','CA','IA-m','IA-f'))) %>%
+  mutate(pt=planningTime/1000) %>%
+  group_by(subject) %>%
+  mutate(meanpt=mean(pt),
+         stdpt=sd(pt)) %>%
+  mutate(zpt=(pt-meanpt)/stdpt) %>%
+  ungroup() %>%
+  group_by(subject, totalAdv, trialAdvType) %>%
+  summarize(meanpt=mean(meanpt),
+            stdpt=mean(stdpt),
+            medianzpt=median(zpt)) %>%
+  ungroup() %>%
+  mutate(popmeanpt=mean(meanpt), 
+         popstdpt=mean(stdpt)) %>%
+  mutate(projectedmedianzpt=medianzpt*popstdpt+popmeanpt) %>%
+  ggplot(., mapping=aes(x=totalAdv, y=projectedmedianzpt, 
+                        fill=trialAdvType, shape=trialAdvType, color=trialAdvType)) +
+  stat_summary(fun.data = "mean_cl_boot",
+               geom = "pointrange",
+               position = position_dodge(width=0.3),
+               size = .5) +
+  labs(x='Total Path Difference',
+      y='Projected Median\nz(First Move Response Time) (s)',
+      tag='C') +
+  scale_fill_manual(labels=c('NT','IA(|mAdv|=1)','IA(|mAdv|=2)','SA-m','SA-f','CA','IA-m','IA-f'),
+                    values=c('white','white','white', redblue[5], redblue[2], 'white', redblue[5], redblue[2]),
+                    name='Adv. Type') +
+  scale_color_manual(labels=c('NT','IA(|mAdv|=1)','IA(|mAdv|=2)','SA-m','SA-f','CA','IA-m','IA-f'),
+                     values=c('black', redblue[4], redblue[5], 'black', 'black', 'black', 'black', 'black'),
+                     name='Adv. Type') +
+  scale_shape_manual(labels=c('NT','IA(|mAdv|=1)','IA(|mAdv|=2)','SA-m','SA-f','CA','IA-m','IA-f'),
+                     values=c(24,22,22,21,21,23,22,22),
+                     name='Adv. Type') +
+  coord_cartesian(ylim=c(0.8, 2.5)) +
+  theme(legend.title=element_text(size=9), 
+        legend.text=element_text(size=9),
+        legend.key.size=unit(0.75, 'line'))
+```
+
+```{r, fig.width=8, fig.height=3}
+p1 + p2 + p3 +
+  plot_annotation(tag_levels='A') +
+  plot_layout(ncol=3, widths = c(1,1.5,2)) &
+  theme(axis.title = element_text(size=10))
+
+# ggsave(paste(plotout,'exp1.pdf', sep=''), bg='transparent')
+# ggsave(paste(plotout,'exp1_top.pdf', sep=''), bg='transparent')
+# ggsave(paste(plotout,'exp1_bottom.pdf', sep=''), bg='transparent')
+```
+
+### optimal choice test
+```{r}
+## create unique labels for each of 12 unique advantage mappings
+data.fulltrialtypes = data %>%
+  mutate(trialAdvType = ifelse(trialAdvType=='IA', 
+                               paste(trialAdvType,abs(myopicQuantAdv),sep='-'),
+                               paste(trialAdvType,abs(totalAdv),sep='-'))) %>%
+  mutate(trialAdvType=factor(trialAdvType, levels=c('NT-0','IA-1','IA-2',
+                                                    'SA-m-2','SA-f-2','IA-m-2','IA-f-2',
+                                                    'CA-4','SA-m-4','SA-f-4', 'IA-m-4','IA-f-4')))
+```
+
+```{r}
+fit.optim = data.fulltrialtypes %>%
+  filter(totalAdv != 0) %>%
+  mutate(optimal=pathStart==totalAdvPath) %>%
+  glmer(optimal ~ 1 + trialAdvType + (1| subject),
+        data=.,
+        family=binomial(link='probit'))
+
+fit.null = data.fulltrialtypes %>%
+  filter(totalAdv != 0) %>%
+  mutate(optimal=pathStart==totalAdvPath) %>%
+  glmer(optimal ~ 1 + (1| subject),
+        data=.,
+        family=binomial(link='probit'))
+
+anova(fit.null, fit.optim)
+# fit.null: optimal ~ 1 + (1 | subject)
+# fit.optim: optimal ~ 1 + trialAdvType + (1 | subject)
+#           Df    AIC    BIC  logLik deviance  Chisq Chi Df Pr(>Chisq)    
+# fit.null   2 3605.1 3618.7 -1800.5   3601.1                             
+# fit.optim 10 3319.3 3387.6 -1649.7   3299.3 301.76      8  < 2.2e-16 ***
+
+# [1] "SA-m-2" "SA-f-2" "IA-m-2" "IA-f-2" "CA-4"   "SA-m-4" "SA-f-4" "IA-m-4" "IA-f-4"
+
+emms = emmeans(fit.optim, ~trialAdvType)
+contrasts = list(sa_vs_ca=c(0,0,0,0, -1,.5,.5,0,0),
+                 ia_vs_ca=c(0,0,0,0, -1,0,0,.5,.5),
+                 sa_vs_ia=c(-.25,-.25,.25,.25, 0,-.25,-.25,.25,.25),
+                 m_vs_f=c(-.25,.25,-.25,.25, 0,-.25,.25,-.25,.25),
+                 sam_vs_saf=c(-.5,.5,0.,0., 0,-.5,.5,0.,0.),
+                 iam_vs_iaf=c(0.,0.,-.5,.5, 0,0.,0.,-.5,.5),
+                 ta2_vs_ta4=c(-1/4,-1/4,-1/4,-1/4, 1/5,1/5,1/5,1/5,1/5))
+contrast(emms, contrasts, adjust='bonferroni')
+#  contrast   estimate     SE  df z.ratio p.value
+#  sa_vs_ca     -0.135 0.1307 Inf -1.033  1.0000 
+#  ia_vs_ca     -0.640 0.1221 Inf -5.245  <.0001 
+#  sa_vs_ia     -0.529 0.0556 Inf -9.520  <.0001 
+#  m_vs_f       -0.226 0.0552 Inf -4.094  0.0003 
+#  sam_vs_saf   -0.118 0.0879 Inf -1.345  1.0000 
+#  iam_vs_iaf   -0.334 0.0667 Inf -5.006  <.0001 
+#  ta2_vs_ta4    0.592 0.0537 Inf 11.027  <.0001 
+# 
+# P value adjustment: bonferroni method for 7 tests 
+
+# get grouped emmeans for each contrast
+group=contrasts['sam_vs_saf'][[1]]
+
+refg = ref_grid(fit.optim) %>%
+  add_grouping('group', 'trialAdvType', group)
+
+emmeans(refg, ~group)
+```
+
+### rt test
+```{r}
+fit.rt = data.fulltrialtypes %>%
+  mutate(pt=planningTime/1000) %>%
+  group_by(subject) %>%
+  mutate(meanpt=mean(pt),
+         stdpt=sd(pt)) %>%
+  mutate(zpt=(pt-meanpt)/stdpt) %>%
+  ungroup() %>%
+  group_by(subject, trialAdvType) %>%
+  summarize(meanpt=mean(meanpt),
+            stdpt=mean(stdpt),
+            medianzpt=median(zpt)) %>%
+  ungroup() %>%
+  lm(medianzpt ~ 1 + trialAdvType,
+     data = .)
+
+anova(fit.rt)
+# Analysis of Variance Table
+# 
+# Response: medianzpt
+#                Df Sum Sq Mean Sq F value    Pr(>F)    
+# trialAdvType   11 19.473 1.77031  22.795 < 2.2e-16 ***
+# Residuals    1128 87.605 0.07766                      
+# ---
+# Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+levels(data.fulltrialtypes$trialAdvType) 
+#  [1] "NT-0"   "IA-1"   "IA-2"   "SA-m-2" "SA-f-2" "IA-m-2" "IA-f-2" "CA-4"   "SA-m-4" "SA-f-4" "IA-m-4" "IA-f-4"
+
+emms = emmeans(fit.rt, ~trialAdvType)
+contrasts = list(nt_vs_ia=c(-1,0.5,0.5, 0,0,0,0, 0,0,0,0,0),
+                 sa_vs_ca=c(0,0,0, 0,0,0,0, -1,.5,.5,0,0),
+                 ia_vs_ca=c(0,0,0, 0,0,0,0, -1,0,0,.5,.5),
+                 sa_vs_ia=c(0,0,0, -.25,-.25,.25,.25, 0,-.25,-.25,.25,.25),
+                 m_vs_f=c(0,0,0, -.25,.25,-.25,.25, 0,-.25,.25,-.25,.25),
+                 sam_vs_saf=c(0,0,0, -.5,.5,0.,0., 0,-.5,.5,0.,0.),
+                 iam_vs_iaf=c(0,0,0, 0.,0.,-.5,.5, 0,0.,0.,-.5,.5),
+                 ta0_vs_ta2=c(-1/3,-1/3,-1/3, 1/4,1/4,1/4,1/4, 0,0,0,0,0),
+                 ta0_vs_ta4=c(-1/3,-1/3,-1/3, 0,0,0,0, 1/5,1/5,1/5,1/5,1/5),
+                 ta2_vs_ta4=c(0,0,0, -1/4,-1/4,-1/4,-1/4, 1/5,1/5,1/5,1/5,1/5)
+                 )
+
+contrast(emms, contrasts, adjust='bonferroni')
+#  contrast   estimate     SE   df t.ratio p.value
+#  nt_vs_ia     0.1549 0.0350 1128   4.425 0.0001 
+#  sa_vs_ca     0.0870 0.0350 1128   2.485 0.1310 
+#  ia_vs_ca     0.2359 0.0350 1128   6.737 <.0001 
+#  sa_vs_ia     0.1332 0.0202 1128   6.590 <.0001 
+#  m_vs_f       0.0588 0.0202 1128   2.911 0.0368 
+#  sam_vs_saf   0.0530 0.0286 1128   1.855 0.6385 
+#  iam_vs_iaf   0.0647 0.0286 1128   2.261 0.2393 
+#  ta0_vs_ta2  -0.1395 0.0218 1128  -6.387 <.0001 
+#  ta0_vs_ta4  -0.2552 0.0209 1128 -12.222 <.0001 
+#  ta2_vs_ta4  -0.1157 0.0192 1128  -6.033 <.0001 
+# 
+# P value adjustment: bonferroni method for 10 tests 
+
+# get grouped emmeans for each contrast
+group=contrasts['ta0_vs_ta2'][[1]]
+
+refg = ref_grid(fit.rt) %>%
+  add_grouping('group', 'trialAdvType', group)
+
+emmeans(refg, ~group)
+```
+
+## competing myopic and future advantages
+
+### Fit drift-diffusion model
+```{r}
+require(parallel)
+MIN_ZRT = 0.5
+
+data.fit = data %>%
+  group_by(subject) %>%
+  mutate(rt=scale(planningTime/1000)) %>%
+  # compensate smallest rt for rt's smaller than min_zrt since ddiffusion wants positive t0
+  mutate(rt=rt-min(rt)+MIN_ZRT) %>%
+  ungroup() %>%
+  filter(grepl('IA', trialAdvType)) %>%
+  mutate(pathFavorsMyopicAdv = as.numeric(pathStart==myopicAdvPath)) %>%
+  mutate(response = ifelse(pathFavorsMyopicAdv==T, 'upper', 'lower')) %>%
+  # use absolute values for fitting purpose, essentially folding over up and down cases
+  mutate(myopicQuantAdv=abs(myopicQuantAdv),
+         futureQuantAdv=abs(futureQuantAdv)) %>%
+  dplyr::select(subject, myopicQuantAdv, futureQuantAdv, rt, response)
+
+myopicQuantAdv = data.fit %>% 
+  dplyr::select(myopicQuantAdv, futureQuantAdv) %>% 
+  unique() %>% pull(myopicQuantAdv)
+futureQuantAdv = data.fit %>% 
+  dplyr::select(myopicQuantAdv, futureQuantAdv) %>% 
+  unique() %>% pull(futureQuantAdv)
+all_subjects = data.fit %>% pull(subject) %>% unique()
+```
+
+```{r}
+# ddiffusion uses 'v' to denote drift rate, i'm using d...
+
+compute_drift_rate = function(pars, ma, fa, symbol='[]') {
+  if (symbol=='[]') {
+    if('d' %in% names(pars)) {
+      return(pars['d']*(ma-fa))
+    }
+    return(ma*pars['md']-fa*pars['fd'])
+  }
+  else {
+    if('d' %in% names(pars)) {
+      return(pars$d*(ma-fa))
+    }
+    return(ma*pars$md-fa*pars$fd)
+  }
+}
+```
+
+```{r}
+diffusion_objective = function(pars, data) {
+  # loop over all 6 unique IA trials
+  densities = vector('numeric', length(data$rt))
+  for (i in 1:length(myopicQuantAdv)) {
+    ma = myopicQuantAdv[i]
+    fa = futureQuantAdv[i]
+    subset_mask = (data$myopicQuantAdv==ma) & (data$futureQuantAdv==fa)
+    x = data %>% filter(subset_mask)
+    densities[subset_mask] = ddiffusion(rt=x$rt,
+                                        response=x$response,
+                                        t0=pars['t0'],
+                                        a=pars['a'],
+                                        v=compute_drift_rate(pars, ma, fa),
+                                        sv=if ('sd' %in% names(pars)) pars['sd']
+                                           else 0,
+                                        z=if('z' %in% names(pars)) pars['z']
+                                           else 0.5*pars['a'],
+                                        sz=if ('sz' %in% names(pars)) pars['sz']
+                                           else 0)
+  }
+  if (any(densities==0)) return(1e6)
+  return(-sum(log(densities)))
+}
+
+get_init_vals = function(model_spec, data) {
+  # model_spec: a list of parameters, must include ['t0','a'] and one of ['d'] or ['md','fd']
+  init_ll=1e6
+  while(init_ll>=1e6){ # find a valid set of initial value
+    pars = c() # parameters
+    lower = c() # lower bounds
+    # t0: irreducible nondecision time
+    if('t0' %in% model_spec) {pars=c(pars, t0=runif(1, 0, MIN_ZRT))
+    lower=c(lower, 0)}
+    # st0: variability in irreducible nondecision time
+    if('st0' %in% model_spec) {pars=c(pars, st0=runif(1, 0, MIN_ZRT))
+    lower=c(lower, 0)}
+    # a: decision bound
+    if('a' %in% model_spec) {pars=c(pars, a=runif(1, 0, 1))
+    lower=c(lower, 0)}
+    # d: drift rate (but argument v in ddiffusion)
+    if('d' %in% model_spec) {pars=c(pars, d=runif(1, 0, 1))
+    lower=c(lower, -Inf)}
+    if('md' %in% model_spec) {pars=c(pars, md=runif(1, 0, 1))
+    lower=c(lower, -Inf)}
+    if('fd' %in% model_spec) {pars=c(pars, fd=runif(1, 0, 1))
+    lower=c(lower, -Inf)}
+    # sd: across-trial-variability of drift rate (sv in ddiffusion))
+    if('sd' %in% model_spec) {pars=c(pars, sd=runif(1, 0, 1))
+    lower=c(lower, 0)}
+    # z: starting point
+    if('z' %in% model_spec) {pars=c(pars, z=runif(1, 0, 1))
+    lower=c(lower, 0)}
+    # sz: across-trial-variability of starting point
+    if('sz' %in% model_spec) {pars=c(pars, sz=runif(1, 0.01, 1))
+    lower=c(lower, 0.01)}
+    init_ll = diffusion_objective(pars, data)
+  }
+  return (list(pars=pars, lower=lower))
+}
+
+fit_diffusion_model = function(model_spec, train_data, test_data){
+  init_vals  = get_init_vals(model_spec, train_data)
+  fit = nlminb(init_vals$pars, 
+               diffusion_objective, 
+               data=train_data, 
+               lower=init_vals$lower)
+  # fit$init_vals = init_vals$pars
+  fit$test_objective = diffusion_objective(pars=fit[[1]], data=test_data)
+  return(fit)
+}
+
+find_best_fit = function(model_spec, train_data, test_data, nfit) {
+  fits = mclapply(1:nfit, function(x) {fit_diffusion_model(model_spec, 
+                                                            train_data, 
+                                                            test_data)}, 
+                  mc.cores=2)
+  # flag if any training objective is 1e6
+  train_objectives = unlist(lapply(fits, '[[', 2))
+  if (sum(train_objectives==1e6)>0) {cat('uh oh')} # this isn't good
+  # find minimum train objective out of all fits
+  train_objective_argmin = which(train_objectives==min(train_objectives))
+  if (length(train_objective_argmin)>1) {train_objective_argmin=train_objective_argmin[1]} #ties
+  best_fit = fits[[train_objective_argmin]]
+  best_fit = as.data.frame(t(unlist(best_fit)))
+  colnames(best_fit) <- sub("par.", "", colnames(best_fit))
+  return(best_fit)
+}
+
+cross_val_paired = function(i, model_spec, data, nfit) {
+  # performs one round of monte-carlo cross validation
+  test_subjects = cv_folds[,i]
+  train_data = data %>% filter(! subject %in% test_subjects)
+  test_data = data %>% filter(subject %in% test_subjects)
+  best_fit = find_best_fit(model_spec,
+                           train_data=train_data,
+                           test_data=test_data,
+                           nfit=nfit)
+  best_fit$test_subjects = list(test_subjects)
+  return (best_fit)
+}
+```
+
+```{r}
+# all possible params: c('t0','a','d','md','fd','sd','z','sz')
+
+tophalf = data.fit %>% filter(subject %in% top_half)
+bottomhalf = data.fit %>% filter(! subject %in% top_half)
+
+# generate 200 CV fold used commonly across different models
+nfold = 200
+ntest = 15 # 35 for all, 15 for tophalf, 13 for bottomhalf
+# cv_folds = as.data.frame(replicate(nfold, sample(unique(tophalf$subject), ntest)))
+# saveRDS(cv_folds, 'exp1_cv_fold.RData')
+# cv_folds = readRDS('exp1_cv_fold.RData')
+
+############
+# paired   #
+############
+model_specs = list(
+                   # c('t0','a','d'),
+                   # c('t0','a','d','sd'),
+                   # c('t0','a','d','sz'),
+                   # c('t0','a','d','sz','sd'),
+                   # c('t0','a','d','z'),
+                   # c('t0','a','d','z','sd'),
+                   # c('t0','a','d','z','sz'),
+                   # c('t0','a','d','z','sz','sd'),
+                   # c('t0','a','md','fd'),
+                   # c('t0','a','md','fd','sd'),
+                   # c('t0','a','md','fd','sz'),
+                   c('t0','a','md','fd','sz','sd')
+                   # c('t0','a','md','fd','z'),
+                   # c('t0','a','md','fd','z','sd'),
+                   # c('t0','a','md','fd','z','sz'),
+                   # c('t0','a','md','fd','z','sz','sd')
+                  )
+
+for (i in 1:length(model_specs)) {
+    spec = model_specs[[i]]
+    model_out = paste('./exp1_diffusion/fixed_cv/exp1_fits_tophalf_',
+                      paste(spec, collapse='_'),
+                      '.RData', sep='')
+    if(! file.exists(model_out)) {
+        cat(paste('fitting and saving to ',model_out,'......\n',sep=''))
+        t0 = Sys.time()
+        # fits = mclapply(1:nfold, function(i) {cross_val_paired(i, spec, data.fit, nfit=10)}, 
+        #                 mc.cores=1)
+        fits = mclapply(1:nfold, function(i) {cross_val_paired(i, spec, tophalf, nfit=50)},
+                        mc.cores=1)
+        t1 = Sys.time()
+        cat(t1-t0)
+        saveRDS(fits, model_out)
+    }
+}
+```
+
+#### analyze fits
+```{r, warning=F}
+
+read_fit = function(fname) {
+  fit = readRDS(fname)
+  fit = do.call(rbind.data.frame, fit) %>% mutate_all(as.character)
+  fit = fit %>% 
+      # for some reason R transforms the list of test subjects weirdly
+      # can verify in raw RData file that the folds match for paired CV
+      dplyr::select(-test_subjects) %>% 
+      mutate(fold=1:n(),
+             model=str_sub(tail(str_split(fname,'/')[[1]],1),
+                           start=11,end=-7))
+  return(fit)
+}
+
+############
+#  paired  #
+############
+paired_fits = list.files(path='./exp1_diffusion/fixed_cv', 
+                      pattern='exp1_fits_t0_*', full.names=T)
+paired_fits = do.call(bind_rows, lapply(paired_fits, read_fit)) %>%
+  mutate_at(c('t0','a','md','fd','d','sd','z','sz',
+              'objective','test_objective'), as.numeric) %>%
+  filter(!grepl('adjusted', model)) %>%
+  mutate(model=factor(model))
+```
+
+```{r, fig.width=4, fig.height=3.2}
+data.plot = paired_fits %>%
+  mutate(group=ifelse(grepl('_sz_sd', model),'both',
+               ifelse(grepl('_sd', model),'drift rate',
+               ifelse(grepl('_sz', model), 'starting point','none'
+               )))) %>%
+  mutate(group=factor(group, levels=c('none','starting point', 'drift rate','both'))) %>%
+  mutate(modelname=ifelse(grepl('md_fd_z',model), 'different weighting + starting bias',
+                   ifelse(grepl('md_fd',model), 'different weighting',
+                   ifelse(grepl('d_z',model), 'equal weighting + starting bias',
+                   ifelse(grepl('d',model),'equal weighting'))))) %>%
+  mutate(modelname=factor(modelname, levels=c('equal weighting','equal weighting + starting bias','different weighting','different weighting + starting bias')))
+
+p.model.comp.full = ggplot() +
+  stat_summary(data=data.plot, 
+               mapping=aes(x=modelname, y=test_objective, color=group, fill=group),
+               fun='mean',
+               geom='bar',
+               width=0.8,
+               position=position_dodge(width=.9)) +
+  stat_summary(data=data.plot, 
+               mapping=aes(x=modelname, y=test_objective, fill=group),
+               fun.data='mean_cl_boot',
+               geom='errorbar',
+               position=position_dodge(width=.9)) +
+  annotate('text', label='*', x=3.35, y=2298, size=4, hjust=0.5) +
+  coord_cartesian(ylim=c(2300, 2430)) +
+  scale_color_manual(values=c(redblue[3], redblue[1], redblue[2], redblue[3])) +
+  scale_fill_manual(values=c(NA, redblue[1], redblue[2], redblue[3])) +
+  labs(y='Test Data sNLL',
+       fill='Inter-trial Variability', 
+       color='Inter-trial Variability') +
+  guides(fill=guide_legend(ncol=4), color=guide_legend(ncol=4)) +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.title.x=element_blank(),
+        legend.position=c(0.5, 0.98)) +
+  geom_text(data.plot %>% group_by(modelname) %>% filter(group=='drift rate') %>%
+    summarize(test_objective=mean(test_objective)),
+              mapping=aes(x=1:4-0.35, y=2296, label=modelname),
+              hjust=0, angle=90, size=2.5)
+```
+
+```{r}
+levels(paired_fits$model)
+#  [1] "t0_a_d"             "t0_a_d_sd"          "t0_a_d_sz"          "t0_a_d_sz_sd"      
+#  [5] "t0_a_d_z"           "t0_a_d_z_sd"        "t0_a_d_z_sz"        "t0_a_d_z_sz_sd"    
+#  [9] "t0_a_md_fd"         "t0_a_md_fd_sd"      "t0_a_md_fd_sz"      "t0_a_md_fd_sz_sd"  
+# [13] "t0_a_md_fd_z"       "t0_a_md_fd_z_sd"    "t0_a_md_fd_z_sz"    "t0_a_md_fd_z_sz_sd"
+model_comp = lmer(test_objective~1+model+(1|fold), paired_fits)
+emms = emmeans(model_comp, ~model)
+emms
+
+contrasts = list(none_vs_sz=rep(c(1,0,-1,0),4),
+                 none_vs_sd=rep(c(1,-1,0,0),4),
+                 none_vs_szsd=rep(c(1,0,0,-1),4),
+                 sz_vs_sd=rep(c(0,1,-1,0),4),
+                 sz_vs_szsd=rep(c(0,1,0,-1),4),
+                 sd_vs_szsd=rep(c(0,0,1,-1),4))
+contrast(emms, contrasts, adjust='bonferroni')
+#  contrast     estimate   SE  df z.ratio p.value
+#  none_vs_sz       17.3 2.88 Inf   6.003 <.0001 
+#  none_vs_sd      175.6 2.88 Inf  60.884 <.0001 
+#  none_vs_szsd    304.2 2.88 Inf 105.459 <.0001 
+#  sz_vs_sd       -158.3 2.88 Inf -54.881 <.0001 
+#  sz_vs_szsd      128.6 2.88 Inf  44.575 <.0001 
+#  sd_vs_szsd      286.9 2.88 Inf  99.456 <.0001 
+# 
+# P value adjustment: bonferroni method for 6 tests
+
+# get grouped emmeans for each contrast
+group=contrasts['sd_vs_szsd'][[1]]
+refg = ref_grid(model_comp) %>% add_grouping('group', 'model', group)
+emmeans(refg, ~group)
+#  group emmean    SE    df lower.CL upper.CL
+#  -1      2397 5.956 199.7     2386     2409
+#  0       2323 5.967 201.2     2312     2335
+#  2       2356 5.967 201.2     2344     2368
+# 
+# Results are averaged over the levels of: model 
+# Degrees-of-freedom method: kenward-roger 
+# Confidence level used: 0.95 
+
+contrasts = list(d_vs_dz=c(0,0,0,-1,0,0,0,1,0,0,0,0,0,0,0,0),
+                 d_vs_mdfd=c(0,0,0,-1,0,0,0,0,0,0,0,1,0,0,0,0),
+                 d_vs_mdfdz=c(0,0,0,-1,0,0,0,0,0,0,0,0,0,0,0,1),
+                 dz_vs_mdfd=c(0,0,0,0,0,0,0,-1,0,0,0,1,0,0,0,0),
+                 dz_vs_mdfdz=c(0,0,0,0,0,0,0,-1,0,0,0,0,0,0,0,1),
+                 mdfd_vs_mdfdz=c(0,0,0,0,0,0,0,0,0,0,0,-1,0,0,0,1)
+                 )
+contrast(emms, contrasts, adjust='bonferroni')
+#  contrast      estimate   SE  df z.ratio p.value
+#  d_vs_dz           4.53 1.44 Inf  3.138  0.0102 
+#  d_vs_mdfd        -8.98 1.44 Inf -6.223  <.0001 
+#  d_vs_mdfdz       -6.54 1.44 Inf -4.532  <.0001 
+#  dz_vs_mdfd      -13.50 1.44 Inf -9.361  <.0001 
+#  dz_vs_mdfdz     -11.06 1.44 Inf -7.670  <.0001 
+#  mdfd_vs_mdfdz     2.44 1.44 Inf  1.691  0.5451 
+# 
+# P value adjustment: bonferroni method for 6 tests 
+```
+
+```{r, fig.width=4.5, fig.height=3}
+
+params = readRDS('exp1_diffusion/fixed_cv/exp1_fits_t0_a_md_fd_sz_sd_adjusted.RData')
+# params = readRDS('exp1_diffusion/fixed_cv/exp1_fits_tophalf_t0_a_md_fd_sz_sd_adjusted.RData')
+# params = readRDS('exp1_diffusion/fixed_cv/exp1_fits_bottomhalf_t0_a_md_fd_sz_sd_adjusted.RData')
+params = do.call(rbind.data.frame, params) %>%
+  mutate_all(as.character) %>% 
+  # for some reason R transforms the list of test subjects weirdly
+  # can verify in raw RData file that the folds match for paired CV
+  dplyr::select(-test_subjects) %>%
+  mutate(fold=1:n()) %>%
+  mutate_at(c('t0','a','md','fd','sd','sz',
+              'objective','test_objective'), as.numeric)
+
+x = params # paired_fits%>%filter(model=='t0_a_md_fd_sz_sd')
+mean(x$md/x$fd) # 1.127268 # top: 1.085949 # bottom: 1.192657
+sd(x$md/x$fd) # 0.02337344 # top: 0.02328052 # bottom: 0.05229453
+
+data.plot = params %>% # paired_fits %>% filter(model=='t0_a_md_fd_sz_sd') %>%
+  pivot_longer(c('t0','a','md','fd','sz','sd'), names_to='param', values_to='value') %>%
+  mutate(param=factor(param, levels=c('t0','a','md','fd','sz','sd')))
+
+p1 = data.plot %>%
+  filter(param %in% c('t0')) %>%
+  ggplot(data=., mapping=aes(x=1, y=value)) + 
+  facet_grid(.~param) +
+  geom_point(position=position_jitter(width=.15),
+             alpha=0.05) +
+  stat_summary(fun.data = "mean_cl_boot",
+               geom = "pointrange",
+               size=0.3) +
+  coord_cartesian(ylim=c(0.29,0.5)) +
+  labs(y='Estimate')
+
+p2 = data.plot %>%
+  filter(param %in% c('a','md','fd','sz','sd')) %>%
+  ggplot(data=., mapping=aes(x=1, y=value)) +     
+  geom_point(position=position_jitter(width=.15),
+             alpha=0.05) +
+  stat_summary(fun.data = "mean_cl_boot",
+               geom = "pointrange",
+               size=0.3) +
+  facet_grid(.~param) +
+  coord_cartesian(ylim=c(0,3.5)) +
+  theme(axis.title.y=element_blank())
+
+p.model.params = wrap_plots(p1 + p2 +
+  plot_layout(ncol=2, widths=c(0.2,1)) &
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.title.x=element_blank()),
+  tag_level='new')
+```
+
+```{r}
+# conduct more runs to avoid local minima (sz=0) 
+#  for folds that didn't succeed the first time
+
+spec = c('t0','a','md','fd','sz','sd')
+
+cross_val_paired_helper = function(model_spec, data, nfit, test_subjects) {
+  # performs one round of monte-carlo cross validation
+  train_data = data %>% filter(! subject %in% test_subjects)
+  test_data = data %>% filter(subject %in% test_subjects)
+  best_fit = find_best_fit(model_spec,
+                           train_data=train_data,
+                           test_data=test_data,
+                           nfit=nfit)
+  best_fit$test_subjects = list(test_subjects)
+  return (best_fit)
+}
+
+# --------- 
+# x = readRDS('exp1_diffusion/debug/moreruns_exp1_fits_tophalf_t0_a_md_fd_sz_sd.RData') # top group
+    # with n=50, 8 folds still had sz~0
+    # run more to see if it's at all possible to find a better solution
+# x = readRDS('exp1_diffusion/fixed_cv/exp1_fits_bottomhalf_t0_a_md_fd_sz_sd.RData') # bottom group
+
+x = readRDS('exp1_diffusion/fixed_cv/exp1_fits_t0_a_md_fd_sz_sd.RData')
+
+problem_folds = paired_fits %>% filter(model=='t0_a_md_fd_sz_sd') %>% filter(sz<1) %>% pull(fold)
+# top group problem_folds
+# [1]   7  43  50  76  87 101 106 156
+# cv_folds[,7] 1  75 98 34 6  44 22 59 4  42 16 24 85 81 55
+# cv_folds[,43] 65 49 76 33 43 18 62 75 42 15 44 28 93 64 34
+# cv_folds[,50] 66 54 93 62 13 6  42 69 3  65 8  43 22 38 81
+# cv_folds[,76] 38 81 44 22 11 1  33 29 13 3  35 76 47 24 93
+# cv_folds[,87] 5  20 29 43 76 34 65 98 81 96 54 42 3  57 55
+# cv_folds[,101] 33 93 55 44 26 6  4  47 54 75 16 28 61 13 76
+# cv_folds[,106] 20 8  98 85 44 6  11 62 3  65 24 47 74 55 43
+# cv_folds[,156] 47 64 26 13 18 1  48 76 94 22 90 6  57 93 28
+# bottom group problem_folds
+# [1]   5  11 166
+# cv_folds[,5] 77 87 82 99 92 91 56 97 52 45 63 67 50
+# cv_folds[,11] 71 70 23 14 95 56 87 80 9  2  99 73 50
+# cv_folds[,166] 2  82 87 12 30 92 58 67 77 25 95 9  23
+# main group problem_folds
+# [1]  10  71 103 149 179
+# cv_folds[,10] 11 43 40 46 15 80 54 49 84 99 71 22 94 20 2  65 42 86 10 51 48 70 55 21 4  14 17 63 45 72 91 6  69 39 89
+# cv_folds[,71] 77 67 8  38 35 87 9  60 58 65 24 10 63 76 89 59 72 70 22 51 81 95 31 71 13 28 23 93 86 82 91 17 90 43 25
+# cv_folds[,103] 46 25 23 60 67 77 56 99 10 48 91 66 97 52 47 82 18 2  12 96 88 84 59 63 83 70 89 65 43 39 11 93 55 94 68
+# cv_folds[,149] 24 76 8  22 7  84 82 45 75 16 41 70 9  13 42 43 61 51 96 5  15 23 97 46 3  52 35 80 50 64 20 11 48 77 34
+# cv_folds[,179] 73 32 45 98 23 16 87 75 81 61 12 31 11 92 37 49 65 84 63 85 52 80 28 4  86 97 66 27 57 77 93 72 35 99 43
+fits = mclapply(1:1,
+                function(i) {cross_val_paired_helper(spec, data.fit, nfit=50, 
+                                                     test_subjects=x[[179]]$test_subjects[[1]])},
+                mc.cores=1)
+# manually replace resolved folds (in console)
+# x[[problem_folds[i]]] = fits[[i]] # for i in 1:length(problem_folds) if fits[i]$sz>1
+
+# yet remaining problematic folds: 
+problem_folds = c(87, 156) # top group
+fits = mclapply(1:length(problem_folds), 
+                function(i) {cross_val_paired(problem_folds[i], spec, tophalf, nfit=50)},
+                mc.cores=1)
+# manually replace resolved folds (in console)
+# x[[problem_folds[i]]] = fits[[i]]
+
+# --- save results after replacing problem folds with new set of param estimate
+# saveRDS(x, 'exp1_diffusion/debug/moreruns_adjusted_exp1_fits_tophalf_t0_a_md_fd_sz_sd_adjusted.RData') # top group, copied into exp1_diffusion/fixed_cv/
+# saveRDS(x, 'exp1_diffusion/fixed_cv/exp1_fits_bottomhalf_t0_a_md_fd_sz_sd_adjusted.RData') # bottom group
+# saveRDS(x, 'exp1_diffusion/fixed_cv/exp1_fits_t0_a_md_fd_sz_sd_adjusted.RData') # main group
+```
+
+```{r}
+model_spec = c('t0','a','md','fd','sz','sd')
+best_fit = params %>% # paired_fits %>% filter(model==paste(model_spec, collapse='_')) %>%
+  filter(test_objective==min(test_objective)) %>%
+  dplyr::select(model_spec)
+# > best_fit
+#          t0        a      md       fd      sz       sd
+# 1 0.4831962 3.307399 1.43617 1.300011 2.84349 1.853356
+# top half
+# > best_fit
+#          t0        a       md       fd       sz       sd
+# 1 0.4806661 3.360669 1.568666 1.465677 2.828888 1.408038
+# bottom half
+# > best_fit
+#          t0        a       md        fd       sz       sd
+# 1 0.4812958 3.081581 1.035492 0.9361935 2.577554 1.736859
+
+sample_fitted_dist = function(model_spec, pars, n_sample) {
+  out = map(1:length(myopicQuantAdv), 
+             function(i) {
+               ma=myopicQuantAdv[i]
+               fa=futureQuantAdv[i]
+               x=rdiffusion(n_sample, t0=pars$t0, a=pars$a,
+                            v=compute_drift_rate(pars, ma, fa, symbol='$'),
+                            sv=if('sd' %in% names(pars)) pars$sd else 0,
+                            z=if('z' %in% names(pars)) pars$z else 0.5*pars$a,
+                            sz=if ('sz' %in% names(pars)) pars$sz else 0) %>%
+                   mutate(ma=ma,fa=fa)
+               return(x)
+             })
+  out = bind_rows(out)
+  return(out)
+}
+
+n_sample=50000
+sampled_fit_dist = sample_fitted_dist(model_spec, best_fit, n_sample)
+```
+
+#### descriptive stats for empirical and fitted drift model RT responses
+```{r}
+data.fit.plot = data.fit %>% # bottomhalf %>% 
+  mutate(ma=myopicQuantAdv, fa=futureQuantAdv) %>%
+  mutate(mafa=paste('mAdv=',ma,', ','fAdv=',fa,sep='')) %>%
+  mutate(mafa=factor(mafa, levels=c('mAdv=1, fAdv=1','mAdv=2, fAdv=2',
+                                    'mAdv=2, fAdv=1','mAdv=1, fAdv=2',
+                                    'mAdv=3, fAdv=1','mAdv=1, fAdv=3'))) %>%
+  mutate(correct_response = ifelse(ma>fa, 'upper',
+                            ifelse(ma==fa, 'either', 'lower')),
+         correct = ifelse(ma!=fa, response==correct_response, response),
+         correct = ifelse(correct=='upper', TRUE, correct),
+         correct = ifelse(correct=='lower', FALSE, correct)) %>%
+  group_by(mafa, correct) %>%
+  nest() %>%
+  mutate(mean = map(data, ~mean(.x$rt)),
+         sd = map(data, ~sd(.x$rt)),
+         skew = map(data, ~skewness(.x$rt))) %>%
+  mutate(stats=paste('mean=',sprintf(fmt='%.1f',mean),
+                     '\nsd=',sprintf(fmt='%.1f',sd),
+                     '\nskew=',sprintf(fmt='%.1f',skew), sep='')) %>%
+  unnest(data) %>%
+  ungroup()
+
+sampled_fit_dist.plot = sampled_fit_dist %>%
+  mutate(mafa=paste('mAdv=',ma,', ','fAdv=',fa,sep='')) %>%
+  mutate(mafa=factor(mafa, levels=c('mAdv=1, fAdv=1','mAdv=2, fAdv=2',
+                                    'mAdv=2, fAdv=1','mAdv=1, fAdv=2',
+                                    'mAdv=3, fAdv=1','mAdv=1, fAdv=3'))) %>%
+  mutate(response = as.character(response)) %>%
+  mutate(correct_response = ifelse(ma>fa, 'upper',
+                            ifelse(ma==fa, 'either', 'lower')),
+         correct = ifelse(ma!=fa, response==correct_response, response),
+         correct = ifelse(correct=='upper', TRUE, correct),
+         correct = ifelse(correct=='lower', FALSE, correct)) %>%
+  group_by(mafa, correct) %>%
+  nest() %>%
+  mutate(mean = map(data, ~mean(.x$rt)),
+         sd = map(data, ~sd(.x$rt)),
+         skew = map(data, ~skewness(.x$rt))) %>%
+  mutate(stats=paste('mean=',sprintf(fmt='%.1f',mean),
+                     '\nsd=',sprintf(fmt='%.1f',sd),
+                     '\nskew=',sprintf(fmt='%.1f',skew), sep='')) %>%
+  unnest(data) %>%
+  ungroup()
+```
+
+```{r, fig.width=4.2, fig.height=4.8}
+# https://stackoverflow.com/questions/27611438/density-curve-overlay-on-histogram-where-vertical-axis-is-frequency-aka-count
+
+bin_width = 0.06
+fit_scale_factor = bin_width*nrow(data.fit.plot)/nrow(sampled_fit_dist.plot)
+p.ddm.rt = ggplot() +
+    geom_histogram(data=data.fit.plot %>% filter(correct==TRUE),
+                   mapping=aes(x=rt),
+                   binwidth=bin_width,
+                   color='white', size=.2,
+                   fill=redblue[5]) +
+    geom_histogram(data=data.fit.plot %>% filter(correct==FALSE),
+                     mapping=aes(x=rt, y =-..count..), # plot on reverse side of xaxis
+                     binwidth=bin_width,
+                     color='white', size=.2,
+                     fill=redblue[5]) +
+    geom_text(data=data.fit.plot %>% filter(correct==TRUE) %>%
+                group_by(mafa,stats) %>% nest() %>% ungroup(),
+              mapping=aes(label=stats),
+              x=.5, y=10, hjust=0, vjust=0,
+              color=redblue[5], size=2.5, lineheight=.7) +
+    geom_text(data=data.fit.plot %>% filter(correct==FALSE) %>%
+                group_by(mafa,stats) %>% nest() %>% ungroup(),
+              mapping=aes(label=stats),
+              x=.5, y=-25, hjust=0, vjust=0,
+              color=redblue[5], size=2.5, lineheight=.7) +
+    geom_density(data=sampled_fit_dist.plot %>% filter(correct==TRUE),
+                 mapping=aes(x=rt, y=..count..*fit_scale_factor),
+                 color=redblue[3],
+                 alpha=.0) +
+    geom_density(data=sampled_fit_dist.plot %>% filter(correct==FALSE),
+                   mapping=aes(x=rt, y=-..count..*fit_scale_factor),
+                   color=redblue[3],
+                   alpha=.0) +
+    geom_text(data=sampled_fit_dist.plot %>% filter(correct==TRUE) %>%
+                     group_by(mafa,stats) %>% nest() %>% ungroup(),
+              mapping=aes(label=stats),
+              x=1., y=10, hjust=0, vjust=0,
+              color=redblue[3], size=2.5, lineheight=.7) +
+    geom_text(data=sampled_fit_dist.plot %>% filter(correct==FALSE) %>%
+                     group_by(mafa,stats) %>% nest() %>% ungroup(),
+              mapping=aes(label=stats),
+              x=1., y=-25, hjust=0, vjust=0,
+              color=redblue[3], size=2.5, lineheight=.7) +
+    scale_x_log10(name='z(First Move Response Time)') +
+    scale_y_continuous(name='N(trials)', labels=abs) +
+    facet_wrap(.~mafa, ncol=2) +
+    coord_cartesian(ylim=c(-50,100),
+                    xlim=c(0.4,30))
+```
+
+# combined figure for IA trials
+```{r, fig.width=4, fig.height=2.5}
+patch.left = wrap_plots(p.model.comp.full / p.model.params)
+patch.left + p.ddm.rt +
+  plot_annotation(tag_levels=c('A','1')) +
+  plot_layout(ncol=2, widths=c(1,1)) &
+  theme(axis.title = element_text(size=10),
+        legend.key.size=unit(0.6, 'line'),
+        legend.title=element_text(size=8),
+        legend.text=element_text(size=8),
+        legend.background = element_blank())
+
+# ggsave(paste(plotout,'exp1_ia.pdf', sep=''), bg='transparent')
+```
+
+```{r, fig.width=7.5, fig.height=7.5}
+# fig.width=6, fig.height=6
+
+# p.model.comp.full.tophalf = p.model.comp.full
+p.model.params.tophalf = p.model.params
+p.ddm.rt.tophalf = p.ddm.rt
+
+# p.model.comp.full.bothalf = p.model.comp.full
+p.model.params.bothalf = p.model.params
+p.ddm.rt.bothalf = p.ddm.rt
+
+(p.model.params.tophalf | p.ddm.rt.tophalf) / (p.model.params.bothalf | p.ddm.rt.bothalf) &
+  theme(axis.title = element_text(size=10),
+        legend.key.size=unit(0.6, 'line'),
+        legend.title=element_text(size=8),
+        legend.text=element_text(size=8),
+        legend.background = element_blank())
+
+# ggsave(paste(plotout,'exp1_ia_si.pdf', sep=''), bg='transparent')
+```
+
+# --------- survey ---------
+
+``` {r}
+data.survey = read.csv('../data/ver1/ver1_tidy_survey.csv')
+```
+
+## plot q4 answers using wordcloud
+``` {r}
+q4.answers = paste(data.survey %>% filter(!is.na(totalBonus)) %>% pull(q4), 
+                   collapse = ' ')
+
+rquery.wordcloud(q4.answers, type ="text", lang = "english",
+                 colorPalette = "RdBu")
+
+# png(paste(plotout, 'wordcloud.png', sep=''))
+```
+
+## util function
+```{r}
+rquery.wordcloud <- function(x, type=c("text", "url", "file"), 
+                          lang="english", excludeWords=NULL, 
+                          textStemming=FALSE,  colorPalette="Dark2",
+                          min.freq=3, max.words=200) { 
+  library("tm")
+  library("SnowballC")
+  library("wordcloud")
+  library("RColorBrewer") 
+  
+  if(type[1]=="file") text <- readLines(x)
+  else if(type[1]=="url") text <- html_to_text(x)
+  else if(type[1]=="text") text <- x
+  
+  # Load the text as a corpus
+  docs <- Corpus(VectorSource(text))
+  # Convert the text to lower case
+  docs <- tm_map(docs, content_transformer(tolower))
+  # Remove numbers
+  docs <- tm_map(docs, removeNumbers)
+  # Remove stopwords for the language 
+  docs <- tm_map(docs, removeWords, stopwords(lang))
+  # Remove punctuations
+  docs <- tm_map(docs, removePunctuation)
+  # Eliminate extra white spaces
+  docs <- tm_map(docs, stripWhitespace)
+  # Remove your own stopwords
+  if(!is.null(excludeWords)) 
+    docs <- tm_map(docs, removeWords, excludeWords) 
+  # Text stemming
+  if(textStemming) docs <- tm_map(docs, stemDocument)
+  # Create term-document matrix
+  tdm <- TermDocumentMatrix(docs)
+  m <- as.matrix(tdm)
+  v <- sort(rowSums(m),decreasing=TRUE)
+  d <- data.frame(word = names(v),freq=v)
+  # check the color palette name 
+  if(!colorPalette %in% rownames(brewer.pal.info)) colors = colorPalette
+  else colors = brewer.pal(8, colorPalette) 
+  # Plot the word cloud
+  set.seed(1234)
+  wordcloud(d$word,d$freq, min.freq=min.freq, max.words=max.words,
+            random.order=FALSE, rot.per=0, 
+            use.r.layout=TRUE, colors=colors)
+  
+  invisible(list(tdm=tdm, freqTable = d))
+}
+```
+
+# session info
+```{r}
+sessionInfo()
+```

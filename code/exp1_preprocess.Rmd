@@ -1,0 +1,291 @@
+---
+title: "exp1_preprocess"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## import
+```{r message=FALSE, results='hide'}
+library(knitr)
+library(tidyverse)
+
+fnames = list.files(path='../data/ver1/', pattern='^MinPath_ver1_batch_*', full.names=T)
+foutname = '../data/exp1_tidy'
+```
+
+## load and tidy data
+``` {r}
+data = do.call(rbind, lapply(fnames, function(f){read.csv(f, 
+                                                          header=TRUE, 
+                                                          sep=",", 
+                                                          stringsAsFactors = FALSE)}))
+N = nrow(data)
+
+data = data %>%
+  # assign subject id
+  mutate(subject = 1:N) %>%
+  # extract experiment relevant columns
+  select(subject, starts_with('Answer.')) %>%
+  # rename columns
+  rename_at(vars(starts_with('Answer.')), list(~str_replace(., 'Answer.', ''))) %>%
+  rename(agentIniLoc=agentCanonicalIniLoc, goalLoc=goalCanonicalLoc) %>%
+  select(-agentIniPos, -agentWall, -goalPos, -goalWall, -isPractice)
+
+data.survey = data %>%
+  select('subject', 'totalBonus', starts_with('q')) %>%
+  mutate_at('totalBonus', as.numeric) %>%
+  mutate_at(c('q1', 'q3', 'q5', 'q6'), 
+            ~factor(., levels=c('never','rarely','sometimes','often','always')))
+
+data = data %>%
+  select(-starts_with('q')) %>%
+  filter(totalBonus != '{}')
+```
+
+## expand to trial level
+``` {r}
+# split 1d arrays
+colnames1 = c('trialIndex', 'level', 'side',
+              'agentIniLoc', 'goalLoc',
+              'agentWallStart', 'agentWallEnd',
+              'goalWallStart', 'goalWallEnd',
+              'optimStep', 'totalStep', 'bonus',
+              'startTime', 'startRT', 'endRT');
+
+t1 = data %>% 
+  separate_rows(colnames1, sep=',') %>% 
+  select(subject, totalBonus, colnames1)
+    
+# split 2d arrays
+colnames2 = c('actionSeq', 'actionSeqStr', 'actionSeqEffect', 
+              'actionSeqTime', 'actionSeqRT')
+t2 = data %>%
+  separate_rows(colnames2, sep='\\[|\\],\\[|\\]') %>%
+  filter(actionSeq!='') %>%
+  select(colnames2)
+
+data = cbind(t1, t2) # bind by columns
+remove(t1, t2)
+```
+
+## more tidying: numeric cast, level rename
+``` {r}
+# convert some numeric columns from character columns
+# reorder columns
+numeric.cols = c("optimStep", "totalStep", "bonus", "totalBonus",
+                 "agentIniLoc", "goalLoc",
+                 "agentWallStart", "agentWallEnd",
+                 "goalWallStart",  "goalWallEnd",
+                 "startTime", "startRT", "endRT")
+
+data = data %>%
+  mutate_at(numeric.cols, as.numeric) %>%
+  mutate(trialType = ifelse(level=='EL2', 'key', 
+                     ifelse(level=='L2', 'filler', 
+                     'prac')))
+
+# !note: the original experiment encoded west/east sides as opposite, 
+# labeling trials where the agent starts from the left side as the east trials instead.
+# correcting that here
+data = data %>%
+  rename(sideDeprecated=side) %>%
+  mutate(side=ifelse(sideDeprecated=='west','east',
+              ifelse(sideDeprecated=='east','west',
+                     sideDeprecated)))
+```
+
+## save tidy data
+``` {r}
+write.csv(data, paste(foutname,'.csv', sep=''))
+write.csv(data.survey, paste(foutname, '_survey.csv', sep=''))
+```
+
+## expand to step level
+``` {r}
+data = data %>%
+  separate_rows('actionSeq', 'actionSeqStr', 'actionSeqEffect', 
+                'actionSeqTime', 'actionSeqRT',
+                sep=',') %>%
+  group_by(subject, trialIndex) %>%
+  mutate(step = 1:n()) %>%
+  ungroup() %>%
+  select(subject, trialIndex, level, step, everything()) %>%
+  rename(action=actionSeq, actionStr=actionSeqStr,actionEffect=actionSeqEffect, 
+         actionTime=actionSeqTime, actionRT=actionSeqRT) %>%
+  mutate_at('actionEffect', as.logical) %>%
+  mutate_at(c('actionTime', 'actionRT'), as.numeric)
+
+data = data %>%
+  # convert actions to canonical actions 
+  # use west orientation as the reference orientation
+  # !corrected for the mislabeled east/west sides
+  mutate(canonicalUp = ((side=='west')&(actionStr=='up')) |
+                       ((side=='north')&(actionStr=='right')) |
+                       ((side=='east')&(actionStr=='down')) |
+                       ((side=='south')&(actionStr=='left')),
+         canonicalDown = ((side=='west')&(actionStr=='down')) |
+                       ((side=='north')&(actionStr=='left')) |
+                       ((side=='east')&(actionStr=='up')) |
+                       ((side=='south')&(actionStr=='right')),
+         canonicalLeft = ((side=='west')&(actionStr=='left')) |
+                       ((side=='north')&(actionStr=='up')) |
+                       ((side=='east')&(actionStr=='right')) |
+                       ((side=='south')&(actionStr=='down')),
+         canonicalRight = ((side=='west')&(actionStr=='right')) |
+                       ((side=='north')&(actionStr=='down')) |
+                       ((side=='east')&(actionStr=='left')) |
+                       ((side=='south')&(actionStr=='up'))) %>%
+  mutate(canonicalActionStr = ifelse(canonicalUp, 'up',
+                              ifelse(canonicalDown, 'down',
+                              ifelse(canonicalLeft, 'left',
+                              ifelse(canonicalRight, 'right', 'n/a'))))) %>%
+  select(-canonicalUp, -canonicalDown, -canonicalLeft, -canonicalRight)
+```
+
+## fold back
+``` {r}
+data = data %>%
+  nest(steps=c('step','action', 'actionStr', 'canonicalActionStr',
+               'actionEffect', 'actionTime', 'actionRT'))
+```
+
+# ----- add helpful columns --------
+
+## filter trials
+``` {r}
+data = data %>%
+  mutate(subject = as.factor(subject)) %>%
+  filter(trialType=='key') # only keep the key trials
+```
+
+## extract planning time
+``` {r}
+data = data %>%
+  unnest(steps) %>%
+  group_by(subject, trialIndex) %>%
+  mutate(planningTime = actionRT[which(!is.na(actionRT))[1]]) %>%
+  ungroup() %>%
+  nest(steps=c('step', 'action', 'actionStr', 'canonicalActionStr',
+               'actionEffect', 'actionTime', 'actionRT'))
+```
+
+## Plotting planning time distributions
+``` {r}
+
+c = redblue[1]
+c2 = redblue[3]
+
+data %>%
+  mutate(planningTime = planningTime/1000.0) %>%
+  ggplot(data = .,
+         mapping = aes(x=planningTime, group=subject)) +
+  geom_density(color=c2, fill=c, alpha=0.6) +
+  scale_x_log10() +
+  labs(x='Planning Time (s)')
+```
+
+## exclude ineffective steps and add some useful action columns
+``` {r}
+data = data %>%
+  unnest(steps) %>%
+  filter(actionEffect) %>%
+  group_by(subject, trialIndex) %>%
+  mutate(step = 1:n()) %>% # recode step index after removing ineffective steps
+  mutate(firstRightStep = which(canonicalActionStr=='right')[1],
+         lastRightStep = tail(which(canonicalActionStr=='right'),1),
+         firstAction = canonicalActionStr[1],
+         lastAction = tail(canonicalActionStr, n=1)) %>%
+  ungroup() %>%
+  nest(steps=c('step', 'action', 'actionStr', 'canonicalActionStr',
+               'actionEffect', 'actionTime', 'actionRT'))
+```
+
+## detect path start/end
+``` {r}
+data = data %>%
+  unnest(steps) %>%
+  # finally! create variables indicating the path the subject took to 
+  # move the sprite initially and to approach the goal
+  group_by(subject, trialIndex) %>%
+  # when detecting path start, we use N(up)-N(down) before turning right
+  # because there might be overshooting and the last step before turning right may
+  # actually differ from the side of which the block was moved (small chance)
+  mutate(nup = sum(canonicalActionStr[1:firstRightStep[1]]=='up'),
+         ndown = sum(canonicalActionStr[1:firstRightStep[1]]=='down')) %>%
+  mutate(pathStart = ifelse(nup>ndown, 'upper', 'other'),
+         pathStart = ifelse(nup<ndown, 'lower', pathStart)) %>%
+  # for path end, we use the N(up)-N(down) after the last right step
+  mutate(nup = sum(canonicalActionStr[lastRightStep[1]:max(step)]=='up'),
+         ndown = sum(canonicalActionStr[lastRightStep[1]:max(step)]=='down')) %>%
+  mutate(pathEnd = ifelse(nup>ndown, 'lower', 'other'),
+         pathEnd = ifelse(nup<ndown, 'upper', pathEnd)) %>%
+  select(-nup, -ndown) %>% # remove convenience columns
+  mutate(pathTaken = ifelse( (pathStart=='upper')&(pathEnd=='upper'),
+                             'upper',
+                     ifelse( (pathStart=='lower')&(pathEnd=='lower'),
+                             'lower',
+                             'other'))) %>%
+  # add a column indicating change of plan at the start of the trial
+  mutate(pathStartChange = ifelse( ((firstAction=='down') & (pathStart=='upper')) |
+                                   ((firstAction=='up') & (pathStart=='lower')),
+                                   T,
+                                   F)) %>%
+  ungroup() %>%
+  nest(steps=c('step', 'action', 'actionStr', 'canonicalActionStr',
+               'actionEffect', 'actionTime', 'actionRT'))
+```
+
+## add advantage types
+``` {r}
+data = data %>%
+  mutate(performance = ifelse(bonus==0.03,
+                              'optimal', 
+                              'nonoptimal'),
+         # compute myopic advantage
+         myopicQuantAdv = agentIniLoc - (agentWallStart + agentWallEnd) / 2,
+         myopicAdvPath = ifelse(myopicQuantAdv<0,  
+                                'upper',
+                         ifelse(myopicQuantAdv==0, 
+                                'neutral', 
+                                'lower')),
+         # compute goal advantage
+         futureQuantAdv = goalLoc - (goalWallStart + goalWallEnd) / 2,
+         futureAdvPath = ifelse(futureQuantAdv<0,
+                                'upper',
+                         ifelse(futureQuantAdv==0,
+                                'neutral',
+                                'lower')),
+         # compute total advantage steps and path
+         totalAdv = (myopicQuantAdv + futureQuantAdv) * 2,
+         totalAdvSteps = abs(totalAdv),
+         totalAdvPath = ifelse(totalAdv<0, 
+                               'upper',
+                        ifelse(totalAdv==0, 
+                               'neutral',
+                               'lower')),
+         # compute trial type based on myopic/goal local advantage congruence
+         trialAdvType = ifelse((myopicAdvPath=='neutral')&(futureAdvPath=='neutral'),
+                               'NT',
+                        ifelse((myopicAdvPath!='neutral')&(futureAdvPath=='neutral'),
+                               'MA', 
+                        ifelse((myopicAdvPath=='neutral')&(futureAdvPath!='neutral'),
+                               'FA',
+                        ifelse(((myopicAdvPath=='upper')&(futureAdvPath=='upper')) |
+                               ((myopicAdvPath=='lower')&(futureAdvPath=='lower')),
+                               'CA', 
+                               'IA')))))
+
+# !note: reversing advantage coding so positive=upper (more intuitive)
+data = data %>%
+  mutate(myopicQuantAdv=-myopicQuantAdv,
+         futureQuantAdv=-futureQuantAdv,
+         totalAdv=-totalAdv)
+```
+
+## save augmented data
+``` {r}
+saveRDS(data, paste(foutname,'_augmented.RData',sep=''))
+```
