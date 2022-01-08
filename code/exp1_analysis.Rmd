@@ -23,6 +23,8 @@ library(gamlss.dist)
 library(gamlss)
 library(parameters)
 
+select <- dplyr::select
+
 theme_set(theme_classic() +
           theme(axis.text=element_text(size=10)) +
           theme(axis.title=element_text(size=12)) +
@@ -69,7 +71,7 @@ data = data %>%
 
 # accuracy groups
 ```{r}
-# seprarate fit for participants with top half accuracy and bottom half accuracy
+# separate fit for participants with top half accuracy and bottom half accuracy
 # fast error RT seems to be a between-participant characteristic coming form the 
 # bottom half participants, so it's good to demonstrate how that results in different 
 # fits in supplementary info
@@ -212,7 +214,7 @@ p3 = data %>%
         legend.key.size=unit(0.75, 'line'))
 ```
 
-```{r, fig.width=8, fig.height=3}
+```{r, fig.width=4, fig.height=1.5}
 p1 + p2 + p3 +
   plot_annotation(tag_levels='A') +
   plot_layout(ncol=3, widths = c(1,1.5,2)) &
@@ -595,6 +597,11 @@ data.plot = paired_fits %>%
                ifelse(grepl('_sz', model), 'starting point','none'
                )))) %>%
   mutate(group=factor(group, levels=c('none','starting point', 'drift rate','both'))) %>%
+  # reference all test objectives against the base model (t0_a_d, equal weighting and no starting bias)
+  # to reduce variance over CV fold
+  group_by(model) %>%
+  mutate(test_objective=test_objective-paired_fits %>% filter(model=='t0_a_d') %>% pull(test_objective)) %>%
+  ungroup() %>%
   mutate(modelname=ifelse(grepl('md_fd_z',model), 'different weighting + starting bias',
                    ifelse(grepl('md_fd',model), 'different weighting',
                    ifelse(grepl('d_z',model), 'equal weighting + starting bias',
@@ -613,22 +620,25 @@ p.model.comp.full = ggplot() +
                fun.data='mean_cl_boot',
                geom='errorbar',
                position=position_dodge(width=.9)) +
-  annotate('text', label='*', x=3.35, y=2298, size=4, hjust=0.5) +
-  coord_cartesian(ylim=c(2300, 2430)) +
+  annotate('text', label='*', x=3.35, y=1.5, size=5, hjust=0.5, color='black') +
+  coord_cartesian(ylim=c(-100, 0)) +
   scale_color_manual(values=c(redblue[3], redblue[1], redblue[2], redblue[3])) +
-  scale_fill_manual(values=c(NA, redblue[1], redblue[2], redblue[3])) +
-  labs(y='Test Data sNLL',
+  scale_fill_manual(values=c('white', redblue[1], redblue[2], redblue[3])) +
+  labs(y='Change in Test Data sNLL\nfrom Baseline',
        fill='Inter-trial Variability', 
        color='Inter-trial Variability') +
   guides(fill=guide_legend(ncol=4), color=guide_legend(ncol=4)) +
   theme(axis.text.x=element_blank(),
         axis.ticks.x=element_blank(),
         axis.title.x=element_blank(),
-        legend.position=c(0.5, 0.98)) +
+        axis.line.x = element_blank(),
+        legend.position=c(0.5, 0.1)) +
   geom_text(data.plot %>% group_by(modelname) %>% filter(group=='drift rate') %>%
     summarize(test_objective=mean(test_objective)),
-              mapping=aes(x=1:4-0.35, y=2296, label=modelname),
-              hjust=0, angle=90, size=2.5)
+              mapping=aes(x=1:4+0.34, y=-2, label=modelname),
+              hjust=1, va='right', angle=90, size=2.6, color='white') +
+  geom_text(mapping=aes(x=1-0.35, y=-2, label='baseline sNLL = 2406.10 (SD=76.34)'),
+              hjust=1, va='right', angle=90, size=2.6, color='black')
 ```
 
 ```{r}
@@ -818,7 +828,7 @@ fits = mclapply(1:length(problem_folds),
 model_spec = c('t0','a','md','fd','sz','sd')
 best_fit = params %>% # paired_fits %>% filter(model==paste(model_spec, collapse='_')) %>%
   filter(test_objective==min(test_objective)) %>%
-  dplyr::select(model_spec)
+  select(model_spec)
 # > best_fit
 #          t0        a      md       fd      sz       sd
 # 1 0.4831962 3.307399 1.43617 1.300011 2.84349 1.853356
@@ -870,9 +880,11 @@ data.fit.plot = data.fit %>% # bottomhalf %>%
   mutate(mean = map(data, ~mean(.x$rt)),
          sd = map(data, ~sd(.x$rt)),
          skew = map(data, ~skewness(.x$rt))) %>%
+  rowwise() %>%
   mutate(stats=paste('mean=',sprintf(fmt='%.1f',mean),
                      '\nsd=',sprintf(fmt='%.1f',sd),
-                     '\nskew=',sprintf(fmt='%.1f',skew), sep='')) %>%
+                     '\nskew=',sprintf(fmt='%.1f',skew$Skewness), sep='')) %>%
+  ungroup() %>%
   unnest(data) %>%
   ungroup()
 
@@ -892,9 +904,11 @@ sampled_fit_dist.plot = sampled_fit_dist %>%
   mutate(mean = map(data, ~mean(.x$rt)),
          sd = map(data, ~sd(.x$rt)),
          skew = map(data, ~skewness(.x$rt))) %>%
+  rowwise() %>%
   mutate(stats=paste('mean=',sprintf(fmt='%.1f',mean),
                      '\nsd=',sprintf(fmt='%.1f',sd),
-                     '\nskew=',sprintf(fmt='%.1f',skew), sep='')) %>%
+                     '\nskew=',sprintf(fmt='%.1f',skew$Skewness), sep='')) %>%
+  ungroup() %>%
   unnest(data) %>%
   ungroup()
 ```
@@ -918,12 +932,12 @@ p.ddm.rt = ggplot() +
     geom_text(data=data.fit.plot %>% filter(correct==TRUE) %>%
                 group_by(mafa,stats) %>% nest() %>% ungroup(),
               mapping=aes(label=stats),
-              x=.5, y=10, hjust=0, vjust=0,
+              x=.5, y=15, hjust=0, vjust=0,
               color=redblue[5], size=2.5, lineheight=.7) +
     geom_text(data=data.fit.plot %>% filter(correct==FALSE) %>%
                 group_by(mafa,stats) %>% nest() %>% ungroup(),
               mapping=aes(label=stats),
-              x=.5, y=-25, hjust=0, vjust=0,
+              x=.5, y=-32, hjust=0, vjust=0,
               color=redblue[5], size=2.5, lineheight=.7) +
     geom_density(data=sampled_fit_dist.plot %>% filter(correct==TRUE),
                  mapping=aes(x=rt, y=..count..*fit_scale_factor),
@@ -936,12 +950,12 @@ p.ddm.rt = ggplot() +
     geom_text(data=sampled_fit_dist.plot %>% filter(correct==TRUE) %>%
                      group_by(mafa,stats) %>% nest() %>% ungroup(),
               mapping=aes(label=stats),
-              x=1., y=10, hjust=0, vjust=0,
+              x=1., y=15, hjust=0, vjust=0,
               color=redblue[3], size=2.5, lineheight=.7) +
     geom_text(data=sampled_fit_dist.plot %>% filter(correct==FALSE) %>%
                      group_by(mafa,stats) %>% nest() %>% ungroup(),
               mapping=aes(label=stats),
-              x=1., y=-25, hjust=0, vjust=0,
+              x=1., y=-32, hjust=0, vjust=0,
               color=redblue[3], size=2.5, lineheight=.7) +
     scale_x_log10(name='z(First Move Response Time)') +
     scale_y_continuous(name='N(trials)', labels=abs) +
@@ -951,11 +965,11 @@ p.ddm.rt = ggplot() +
 ```
 
 # combined figure for IA trials
-```{r, fig.width=4, fig.height=2.5}
+```{r, fig.width=8, fig.height=4.8}
 patch.left = wrap_plots(p.model.comp.full / p.model.params)
 patch.left + p.ddm.rt +
   plot_annotation(tag_levels=c('A','1')) +
-  plot_layout(ncol=2, widths=c(1,1)) &
+  plot_layout(ncol=2, widths=c(1.15,1)) &
   theme(axis.title = element_text(size=10),
         legend.key.size=unit(0.6, 'line'),
         legend.title=element_text(size=8),
