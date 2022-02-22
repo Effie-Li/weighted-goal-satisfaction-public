@@ -750,8 +750,7 @@ p.model.params = wrap_plots(p1 + p2 +
   plot_layout(ncol=2, widths=c(0.2,1)) &
   theme(axis.text.x=element_blank(),
         axis.ticks.x=element_blank(),
-        axis.title.x=element_blank()),
-  tag_level='new')
+        axis.title.x=element_blank()))
 ```
 
 ```{r}
@@ -968,8 +967,8 @@ p.ddm.rt = ggplot() +
 ```{r, fig.width=8, fig.height=4.8}
 patch.left = wrap_plots(p.model.comp.full / p.model.params)
 patch.left + p.ddm.rt +
-  plot_annotation(tag_levels=c('A','1')) +
-  plot_layout(ncol=2, widths=c(1.15,1)) &
+  plot_annotation(tag_levels=list(c('A','B','','C'))) +
+  plot_layout(ncol=2, widths=c(1.12,1)) &
   theme(axis.title = element_text(size=10),
         legend.key.size=unit(0.6, 'line'),
         legend.title=element_text(size=8),
