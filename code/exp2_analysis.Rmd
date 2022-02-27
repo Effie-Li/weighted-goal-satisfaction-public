@@ -792,7 +792,7 @@ p.model.comp.full = ggplot() +
        fill=expression(paste('Changes to ',italic('md'),' and ',italic('fd'),' in Subgoal Trials')), 
        color=expression(paste('Changes to ',italic('md'),' and ',italic('fd'),' in Subgoal Trials'))) +
   guides(fill=guide_legend(ncol=4), color=guide_legend(ncol=4)) +
-  theme(legend.position=c(0.5, 0.1),
+  theme(legend.position=c(0.62, 0.1),
         axis.text.x = element_text(vjust=0))
 ```
 
@@ -1073,14 +1073,53 @@ xfull = xfull %>% select(md, fd, gd, dpsg) %>% mutate(group='full')
 xtop = xtop %>% select(md, fd, gd, dpsg) %>% mutate(group='tophalf')
 xbot = xbot %>% select(md, fd, gd, dpsg) %>% mutate(group='bottomhalf')
 
+bootstrap_diff = function(x1, x2) {
+  sample1 = sample(x1, length(x1), replace=T)
+  sample2 = sample(x2, length(x2), replace=T)
+  diff = mean(sample1) - mean(sample2)
+  return(diff)
+}
+
+# ratio comparison
+mean(xtop$md/xtop$fd) # 1.166132
+sd(xtop$md/xtop$fd) # 0.02463593
+mean(xbot$md/xbot$fd) # 1.303483
+sd(xbot$md/xbot$fd) # 0.05758869
+diffs = replicate(1000, bootstrap_diff(xtop$md/xtop$fd, xbot$md/xbot$fd))
+mean(diffs) # -0.137364
+sort(diffs)[25] # -0.1460871
+sort(diffs)[975] # -0.1289108
+
+# goal weight comparison
+mean(xtop$gd) # 0.08209403
+sd(xtop$gd) # 0.03376332
+mean(xbot$gd) # 0.6799137
+sd(xbot$gd) # 0.116323
+diffs = replicate(1000, bootstrap_diff(xbot$gd, xtop$gd))
+mean(diffs) # 0.5979193
+sort(diffs)[25] # 0.5819568
+sort(diffs)[975] # 0.6151206
+
+# degradation comparison
+mean(1-xtop$dpsg) # 0.308898
+sd(1-xtop$dpsg) # 0.0194196
+mean(1-xbot$dpsg) # 0.274907
+sd(1-xbot$dpsg) # 0.02646905
+diffs = replicate(1000, bootstrap_diff(1-xtop$dpsg, 1-xbot$dpsg))
+mean(diffs) # 0.03404985
+sort(diffs)[25] # 0.0295291
+sort(diffs)[975] # 0.03908275
+```
+
+``` {r}
 xbase = xtop %>%
   rbind(xbot) %>%
   select(md, fd, group) %>%
   pivot_longer(c('md','fd'), names_to='param', values_to='value') %>%
   mutate(param=ifelse(param=='md', 'Start', 'Goal')) %>%
-  mutate(group=ifelse(group=='tophalf', 'More Accurate', 'Less Accurate')) %>%
+  mutate(group=ifelse(group=='tophalf', 'More\nAccurate', 'Less\nAccurate')) %>%
   mutate(param=factor(param, levels=c('Start','Goal')),
-         group=factor(group, levels=c('More Accurate','Less Accurate'))) %>%
+         group=factor(group, levels=c('More\nAccurate','Less\nAccurate'))) %>%
   mutate(level='base')
   
 xsubgoal = xtop %>%
@@ -1089,69 +1128,71 @@ xsubgoal = xtop %>%
   select(mdsg, fdsg, gd, group) %>%
   pivot_longer(c('mdsg','fdsg','gd'), names_to='param', values_to='value') %>%
   mutate(param=ifelse(param=='mdsg', 'Start', 
-                      ifelse(param=='fdsg', 'Subgoal', 'Final\nGoal'))) %>%
-  mutate(group=ifelse(group=='tophalf', 'More Accurate', 'Less Accurate')) %>%
-  mutate(param=factor(param, levels=c('Start','Subgoal','Final\nGoal')),
-         group=factor(group, levels=c('More Accurate','Less Accurate'))) %>%
+                      ifelse(param=='fdsg', 'Subgoal', 'Final Goal'))) %>%
+  mutate(group=ifelse(group=='tophalf', 'More\nAccurate', 'Less\nAccurate')) %>%
+  mutate(param=factor(param, levels=c('Start','Subgoal','Final Goal')),
+         group=factor(group, levels=c('More\nAccurate','Less\nAccurate'))) %>%
   mutate(level='subgoal')
 
 pleft = ggplot() +
   stat_summary(data=xbase, 
-               mapping=aes(x=param, y=value, group=group, color=group, fill=group),
+               mapping=aes(x=group, y=value, group=param, color=param, fill=param),
                fun='mean',
                geom='bar',
                width=0.8,
                position=position_dodge(width=.9)) +
   stat_summary(data=xbase,
-               mapping=aes(x=param, y=value, group=group),
+               mapping=aes(x=group, y=value, group=param),
                fun.data='mean_cl_boot',
                geom='errorbar',
                position=position_dodge(width=.9)) +
   scale_color_manual(values=c('black', 'black')) +
   scale_fill_manual(values=c('white', 'gray')) +
-  labs(y='Weight', x='', fill='Participant Group', color='Participant Group') +
-  scale_y_continuous(limits=c(0,2.2), breaks=c(0,1,2)) +
-  geom_text(mapping=aes(x=1, y=2.2, label='Base Task'),
+  labs(y='Weight', x='                                               Participant Group', fill='', color='') +
+  scale_y_continuous(limits=c(0,2.3), breaks=c(0,1,2)) +
+  geom_text(mapping=aes(x=1, y=2.3, label='Base Task'),
             hjust=0, size=4, color='black') +
-  theme(legend.position='none')
+  guides(fill=guide_legend(ncol=2), color=guide_legend(ncol=2)) +
+  theme(legend.position=c(0.5, 0.9))
 
 pright = ggplot() +
   stat_summary(data=xsubgoal, 
-               mapping=aes(x=param, y=value, group=group, color=group, fill=group),
+               mapping=aes(x=group, y=value, group=param, color=param, fill=param),
                fun='mean',
                geom='bar',
                width=0.8,
                position=position_dodge(width=.9)) +
   stat_summary(data=xsubgoal,
-               mapping=aes(x=param, y=value, group=group),
+               mapping=aes(x=group, y=value, group=param),
                fun.data='mean_cl_boot',
                geom='errorbar',
                position=position_dodge(width=.9)) +
-  scale_color_manual(values=c('black', 'black')) +
-  scale_fill_manual(values=c('white', 'gray')) +
-  labs(y='Weight', x='', fill='Participant Group', color='Participant Group') +
-  scale_y_continuous(limits=c(0,2.2), breaks=c(0,1,2)) +
-  geom_text(mapping=aes(x=1.25, y=2.2, label='Complex Task'),
+  scale_color_manual(values=c('black', 'black', 'black')) +
+  scale_fill_manual(values=c('white', 'gray', 'gray30')) +
+  labs(y='Weight', x='', fill='', color='') +
+  scale_y_continuous(limits=c(0,2.3), breaks=c(0,1,2)) +
+  geom_text(mapping=aes(x=1, y=2.3, label='Complex Task'),
             hjust=0, size=4, color='black') +
+  guides(fill=guide_legend(ncol=3), color=guide_legend(ncol=3)) +
   theme(axis.line.y = element_blank(),
         axis.title.y = element_blank(),
         axis.ticks.y = element_blank(),
         axis.text.y = element_blank(),
-        legend.position=c(0, 0.8))
+        legend.position=c(0.5,0.9))
 
 pweight = pleft + pright +
   plot_layout(ncol=2, widths=c(0.75,1))
 ```
 
 # combined figure for IA trials
-```{r, fig.width=3.4, fig.height=2.6}
+```{r, fig.width=7.2, fig.height=5.6}
 ( p.ia.main | p.model.comp.full) / (p.model.params | pweight) +
   plot_layout(nrow=2, heights=c(1,1)) &
   plot_annotation(tag_levels=list(c('A','B','C','','','D'))) &
   theme(axis.title = element_text(size=10),
         legend.key.size=unit(0.6, 'line'),
-        legend.title=element_text(size=8),
-        legend.text=element_text(size=8),
+        legend.title=element_text(size=9),
+        legend.text=element_text(size=9),
         legend.background = element_blank())
 
 # ggsave(paste(plotout,'exp2_ia.pdf', sep=''), bg='transparent')

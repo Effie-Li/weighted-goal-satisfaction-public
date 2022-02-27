@@ -702,8 +702,8 @@ contrast(emms, contrasts, adjust='bonferroni')
 
 ```{r, fig.width=4.5, fig.height=3}
 
-params = readRDS('exp1_diffusion/fixed_cv/exp1_fits_t0_a_md_fd_sz_sd_adjusted.RData')
-# params = readRDS('exp1_diffusion/fixed_cv/exp1_fits_tophalf_t0_a_md_fd_sz_sd_adjusted.RData')
+# params = readRDS('exp1_diffusion/fixed_cv/exp1_fits_t0_a_md_fd_sz_sd_adjusted.RData')
+params = readRDS('exp1_diffusion/fixed_cv/exp1_fits_tophalf_t0_a_md_fd_sz_sd_adjusted.RData')
 # params = readRDS('exp1_diffusion/fixed_cv/exp1_fits_bottomhalf_t0_a_md_fd_sz_sd_adjusted.RData')
 params = do.call(rbind.data.frame, params) %>%
   mutate_all(as.character) %>% 
@@ -717,6 +717,20 @@ params = do.call(rbind.data.frame, params) %>%
 x = params # paired_fits%>%filter(model=='t0_a_md_fd_sz_sd')
 mean(x$md/x$fd) # 1.127268 # top: 1.085949 # bottom: 1.192657
 sd(x$md/x$fd) # 0.02337344 # top: 0.02328052 # bottom: 0.05229453
+
+ratio_top = params$md/params$fd
+ratio_bot = params$md/params$fd
+
+bootstrap_diff = function(x1, x2) {
+  sample1 = sample(x1, length(x1), replace=T)
+  sample2 = sample(x2, length(x2), replace=T)
+  diff = mean(sample1) - mean(sample2)
+  return(diff)
+}
+diffs = replicate(1000, bootstrap_diff(ratio_top, ratio_bot))
+mean(diffs) # -0.1065743
+sort(diffs)[25] # -0.1142544
+sort(diffs)[975] # -0.09798544
 
 data.plot = params %>% # paired_fits %>% filter(model=='t0_a_md_fd_sz_sd') %>%
   pivot_longer(c('t0','a','md','fd','sz','sd'), names_to='param', values_to='value') %>%
