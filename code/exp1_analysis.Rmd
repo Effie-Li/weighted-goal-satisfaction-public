@@ -208,13 +208,13 @@ p3 = data %>%
   scale_shape_manual(labels=c('NT','IA(|mAdv|=1)','IA(|mAdv|=2)','SA-m','SA-f','CA','IA-m','IA-f'),
                      values=c(24,22,22,21,21,23,22,22),
                      name='Adv. Type') +
-  coord_cartesian(ylim=c(0.8, 2.5)) +
+  coord_cartesian(ylim=c(1.0, 2.1)) +
   theme(legend.title=element_text(size=9), 
         legend.text=element_text(size=9),
         legend.key.size=unit(0.75, 'line'))
 ```
 
-```{r, fig.width=4, fig.height=1.5}
+```{r, fig.width=7, fig.height=2.6}
 p1 + p2 + p3 +
   plot_annotation(tag_levels='A') +
   plot_layout(ncol=3, widths = c(1,1.5,2)) &
@@ -562,6 +562,57 @@ for (i in 1:length(model_specs)) {
 }
 ```
 
+``` {r}
+bottom_half = unique(data.fit %>% filter(! subject %in% top_half) %>% pull(subject))
+all_subjects = unique(data.fit$subject)
+
+# fit all N=51 or N=44 for top and bottom groups
+# cv_folds = as.data.frame(matrix(nrow=44, ncol=1))
+# cv_folds[,1] = bottom_half
+# cv_folds_train = cv_folds
+# cv_folds_test = cv_folds
+
+# fit on 1000 random splits
+# cv_folds = as.data.frame(matrix(nrow=95, ncol=1000))
+# for (s in 1:1000) {
+#     cv_folds[, s] = sample(all_subjects, 95) # shuffle participant list
+# }
+# saveRDS(cv_folds, 'exp1_cv_fold_baseline_1000_shuffled_participants_list.RData')
+cv_folds_first_group = cv_folds[1:51,]
+cv_folds_second_group = cv_folds[52:95,]
+
+cv_folds_train = cv_folds_second_group
+cv_folds_test = cv_folds_second_group
+
+cross_val_paired_boot = function(i, model_spec, data, nfit) {
+    # performs one round of monte-carlo cross validation
+    train_subjects = cv_folds_train[,i]
+    test_subjects = cv_folds_test[,i]
+    train_data = data %>% filter(subject %in% train_subjects)
+    test_data = data %>% filter(subject %in% test_subjects)
+    best_fit = find_best_fit(model_spec,
+                             train_data=train_data,
+                             test_data=test_data,
+                             nfit=nfit)
+    best_fit$test_subjects = list(test_subjects)
+    return (best_fit)
+}
+
+spec = c('t0','a','md','fd','sz','sd')
+model_out = paste('./exp1_diffusion_revision/fixed_cv/exp1_fits_baseline_group2_',
+                  paste(spec, collapse='_'),
+                  '.RData', sep='')
+if(! file.exists(model_out)) {
+    cat(paste('fitting and saving to ',model_out,'......\n',sep=''))
+    t0 = Sys.time()
+    fits = mclapply(1:1000, function(i) {cross_val_paired_boot(i, spec, data.fit, nfit=10)},
+                    mc.cores=2)
+    t1 = Sys.time()
+    cat(t1-t0)
+    saveRDS(fits, model_out)
+}
+```
+
 #### analyze fits
 ```{r, warning=F}
 
@@ -703,8 +754,8 @@ contrast(emms, contrasts, adjust='bonferroni')
 ```{r, fig.width=4.5, fig.height=3}
 
 # params = readRDS('exp1_diffusion/fixed_cv/exp1_fits_t0_a_md_fd_sz_sd_adjusted.RData')
-params = readRDS('exp1_diffusion/fixed_cv/exp1_fits_tophalf_t0_a_md_fd_sz_sd_adjusted.RData')
-# params = readRDS('exp1_diffusion/fixed_cv/exp1_fits_bottomhalf_t0_a_md_fd_sz_sd_adjusted.RData')
+# params = readRDS('exp1_diffusion/fixed_cv/exp1_fits_tophalf_t0_a_md_fd_sz_sd_adjusted.RData')
+params = readRDS('exp1_diffusion/fixed_cv/exp1_fits_bottomhalf_t0_a_md_fd_sz_sd_adjusted.RData')
 params = do.call(rbind.data.frame, params) %>%
   mutate_all(as.character) %>% 
   # for some reason R transforms the list of test subjects weirdly
@@ -717,20 +768,6 @@ params = do.call(rbind.data.frame, params) %>%
 x = params # paired_fits%>%filter(model=='t0_a_md_fd_sz_sd')
 mean(x$md/x$fd) # 1.127268 # top: 1.085949 # bottom: 1.192657
 sd(x$md/x$fd) # 0.02337344 # top: 0.02328052 # bottom: 0.05229453
-
-ratio_top = params$md/params$fd
-ratio_bot = params$md/params$fd
-
-bootstrap_diff = function(x1, x2) {
-  sample1 = sample(x1, length(x1), replace=T)
-  sample2 = sample(x2, length(x2), replace=T)
-  diff = mean(sample1) - mean(sample2)
-  return(diff)
-}
-diffs = replicate(1000, bootstrap_diff(ratio_top, ratio_bot))
-mean(diffs) # -0.1065743
-sort(diffs)[25] # -0.1142544
-sort(diffs)[975] # -0.09798544
 
 data.plot = params %>% # paired_fits %>% filter(model=='t0_a_md_fd_sz_sd') %>%
   pivot_longer(c('t0','a','md','fd','sz','sd'), names_to='param', values_to='value') %>%
@@ -975,6 +1012,72 @@ p.ddm.rt = ggplot() +
     facet_wrap(.~mafa, ncol=2) +
     coord_cartesian(ylim=c(-50,100),
                     xlim=c(0.4,30))
+```
+
+# top/bottom group param comparison
+```{r}
+paired_fits = list.files(path='./exp1_diffusion_revision/fixed_cv', 
+                  pattern='exp1_fits_fitall_tophalf*', full.names=T)
+xtop = do.call(bind_rows, lapply(paired_fits, read_fit)) %>%
+  mutate_at(c('t0','a','md','fd','sz','sd',
+              'objective','test_objective'), as.numeric) %>%
+  mutate(model=str_replace(model, 't0_a_md_fd_sz_sd', 'basemodel'))
+
+paired_fits = list.files(path='./exp1_diffusion_revision/fixed_cv', 
+                         pattern='exp1_fits_fitall_bottomhalf*', full.names=T)
+xbot = do.call(bind_rows, lapply(paired_fits, read_fit)) %>%
+  mutate_at(c('t0','a','md','fd','sz','sd',
+              'objective','test_objective'), as.numeric) %>%
+  mutate(model=str_replace(model, 't0_a_md_fd_sz_sd', 'basemodel'))
+
+paired_fits = list.files(path='./exp1_diffusion_revision/fixed_cv', 
+                        pattern='exp1_fits_baseline_group1_*', full.names=T)
+baseline1 = do.call(bind_rows, lapply(paired_fits, read_fit)) %>%
+  mutate_at(c('t0','a','md','fd','sz','sd',
+              'objective','test_objective'), as.numeric) %>%
+  mutate(model=str_replace(model, 't0_a_md_fd_sz_sd', 'basemodel'))
+
+paired_fits = list.files(path='./exp1_diffusion_revision/fixed_cv', 
+                        pattern='exp1_fits_baseline_group2_*', full.names=T)
+baseline2 = do.call(bind_rows, lapply(paired_fits, read_fit)) %>%
+  mutate_at(c('t0','a','md','fd','sz','sd',
+              'objective','test_objective'), as.numeric) %>%
+  mutate(model=str_replace(model, 'baseline_group2_', '')) %>%
+  mutate(model=str_replace(model, 't0_a_md_fd_sz_sd', 'basemodel'))
+
+xtop = xtop %>% select(fold, md, fd) %>% mutate(group='tophalf')
+xbot = xbot %>% select(fold, md, fd) %>% mutate(group='bottomhalf')
+baseline1 = baseline1 %>% select(fold, md, fd) %>% mutate(group='baseline1')
+baseline2 = baseline2 %>% select(fold, md, fd) %>% mutate(group='baseline2')
+
+# ratio
+xtop$md/xtop$fd - xbot$md/xbot$fd # -0.1061277
+boot_diffs = baseline1$md/baseline1$fd - baseline2$md/baseline2$fd
+mean(boot_diffs) # 0.0003448429
+sort(boot_diffs)[25] # -0.1360022
+sort(boot_diffs)[975] # 0.1455553
+```
+
+```{r, fig.width=4, fig.height=3}
+tibble(fold=1:1000,
+       ratio=(baseline1$md/baseline1$fd-baseline2$md/baseline2$fd)) %>%
+  pivot_longer(c('ratio'), names_to='param') %>%
+  ggplot() +
+  geom_histogram(aes(x=value, color='baseline', fill='baseline')) +
+  geom_vline(data=tibble(ratio=(xtop$md/xtop$fd-xbot$md/xbot$fd)) %>%
+                  pivot_longer(c('ratio'), names_to='param'),
+             mapping=aes(xintercept=value, color='observed')) +
+  geom_vline(data=tibble(ratio=sort(boot_diffs)[25]) %>%
+                  pivot_longer(c('ratio'), names_to='param'),
+             mapping=aes(xintercept=value, color='baseline')) +
+  geom_vline(data=tibble(ratio=sort(boot_diffs)[975]) %>%
+                  pivot_longer(c('ratio'), names_to='param'),
+             mapping=aes(xintercept=value, color='baseline')) +
+  facet_grid(~param) +
+  scale_color_manual(values=c(baseline='gray', observed=redblue[1]), name='param difference') +
+  scale_fill_manual(values=c(baseline='white', observed='white'), name='param difference')
+
+# ggsave(paste(plotout,'exp1_split_group_param_dist_fitall_1000cv.pdf', sep=''), bg='transparent')
 ```
 
 # combined figure for IA trials

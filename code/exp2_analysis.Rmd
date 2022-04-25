@@ -701,6 +701,63 @@ for (i in 1:length(model_specs)) {
 }
 ```
 
+```{r}
+# additional fits on random-splitting the participant group 1000 times
+# to obtain baseline parameter estimates for comparison of top/bottom group fits
+setwd('~/github/weighted-goal-satisfaction-revision/code/')
+
+bottom_half = unique(data.fit %>% filter(! subject %in% top_half) %>% pull(subject))
+all_subjects = unique(data.fit$subject)
+
+# fit all N=50 for top and bottom groups
+# cv_folds = as.data.frame(matrix(nrow=50, ncol=1))
+# cv_folds[,1] = bottom_half
+# cv_folds_train = cv_folds
+# cv_folds_test = cv_folds
+
+# fit on 1000 random splits
+# cv_folds = as.data.frame(matrix(nrow=100, ncol=1000))
+# for (s in 1:1000) {
+#     cv_folds[, s] = sample(all_subjects, 100) # shuffle participant list
+# }
+# saveRDS(cv_folds, 'exp2_cv_fold_baseline_1000_shuffled_participants_list.RData')
+cv_folds_first_group = cv_folds[1:50,]
+cv_folds_second_group = cv_folds[51:100,]
+```
+
+``` {r}
+cv_folds_train = cv_folds_second_group
+cv_folds_test = cv_folds_second_group
+
+cross_val_paired_boot = function(i, model_spec, data, nfit) {
+    # performs one round of monte-carlo cross validation
+    train_subjects = cv_folds_train[,i]
+    test_subjects = cv_folds_test[,i]
+    train_data = data %>% filter(subject %in% train_subjects)
+    test_data = data %>% filter(subject %in% test_subjects)
+    best_fit = find_best_fit(model_spec,
+                             train_data=train_data,
+                             test_data=test_data,
+                             nfit=nfit)
+    best_fit$test_subjects = list(test_subjects)
+    return (best_fit)
+}
+
+spec = c('t0','a','md','fd','sz','sd','dpsg','gd')
+model_out = paste('./exp2_diffusion_revision/fixed_cv/exp2_fits_baseline_group2_',
+                  paste(spec, collapse='_'),
+                  '.RData', sep='')
+if(! file.exists(model_out)) {
+    cat(paste('fitting and saving to ',model_out,'......\n',sep=''))
+    t0 = Sys.time()
+    fits = mclapply(1:1000, function(i) {cross_val_paired_boot(i, spec, data.fit, nfit=10)},
+                    mc.cores=2)
+    t1 = Sys.time()
+    cat(t1-t0)
+    saveRDS(fits, model_out)
+}
+```
+
 ### analyze fits
 ```{r, warning=F}
 read_fit = function(fname) {
@@ -1064,54 +1121,45 @@ p.ddm.rt.subgoal = ggplot() +
 ```
 
 # summarize weight estimates
-```{r}
-xfull = paired_fits %>% filter(model=='basemodel_dpsg_gd')
-xtop = paired_fits
-xbot = paired_fits
+``` {r}
+paired_fits = list.files(path='./exp2_diffusion_revision/fixed_cv', 
+                  pattern='exp2_fits_tophalf*', full.names=T)
+xtop = do.call(bind_rows, lapply(paired_fits, read_fit)) %>%
+  mutate_at(c('t0','a','md','fd','sz','sd','dpsg','gd',
+              'objective','test_objective'), as.numeric) %>%
+  mutate(model=str_replace(model, 't0_a_md_fd_sz_sd', 'basemodel')) %>%
+  select(md, fd, gd, dpsg) %>% 
+  mutate(group='tophalf')
 
-xfull = xfull %>% select(md, fd, gd, dpsg) %>% mutate(group='full')
-xtop = xtop %>% select(md, fd, gd, dpsg) %>% mutate(group='tophalf')
-xbot = xbot %>% select(md, fd, gd, dpsg) %>% mutate(group='bottomhalf')
-
-bootstrap_diff = function(x1, x2) {
-  sample1 = sample(x1, length(x1), replace=T)
-  sample2 = sample(x2, length(x2), replace=T)
-  diff = mean(sample1) - mean(sample2)
-  return(diff)
-}
+paired_fits = list.files(path='./exp2_diffusion_revision/fixed_cv', 
+                         pattern='exp2_fits_bottomhalf*', full.names=T)
+xbot = do.call(bind_rows, lapply(paired_fits, read_fit)) %>%
+  mutate_at(c('t0','a','md','fd','sz','sd','dpsg','gd',
+              'objective','test_objective'), as.numeric) %>%
+  mutate(model=str_replace(model, 't0_a_md_fd_sz_sd', 'basemodel')) %>%
+  select(md, fd, gd, dpsg) %>% 
+  mutate(group='bottomhalf')
 
 # ratio comparison
 mean(xtop$md/xtop$fd) # 1.166132
 sd(xtop$md/xtop$fd) # 0.02463593
 mean(xbot$md/xbot$fd) # 1.303483
 sd(xbot$md/xbot$fd) # 0.05758869
-diffs = replicate(1000, bootstrap_diff(xtop$md/xtop$fd, xbot$md/xbot$fd))
-mean(diffs) # -0.137364
-sort(diffs)[25] # -0.1460871
-sort(diffs)[975] # -0.1289108
 
 # goal weight comparison
 mean(xtop$gd) # 0.08209403
 sd(xtop$gd) # 0.03376332
 mean(xbot$gd) # 0.6799137
 sd(xbot$gd) # 0.116323
-diffs = replicate(1000, bootstrap_diff(xbot$gd, xtop$gd))
-mean(diffs) # 0.5979193
-sort(diffs)[25] # 0.5819568
-sort(diffs)[975] # 0.6151206
 
 # degradation comparison
 mean(1-xtop$dpsg) # 0.308898
 sd(1-xtop$dpsg) # 0.0194196
 mean(1-xbot$dpsg) # 0.274907
 sd(1-xbot$dpsg) # 0.02646905
-diffs = replicate(1000, bootstrap_diff(1-xtop$dpsg, 1-xbot$dpsg))
-mean(diffs) # 0.03404985
-sort(diffs)[25] # 0.0295291
-sort(diffs)[975] # 0.03908275
 ```
 
-``` {r}
+```{r}
 xbase = xtop %>%
   rbind(xbot) %>%
   select(md, fd, group) %>%
@@ -1182,6 +1230,94 @@ pright = ggplot() +
 
 pweight = pleft + pright +
   plot_layout(ncol=2, widths=c(0.75,1))
+```
+
+# top/bottom group param comparison
+```{r}
+paired_fits = list.files(path='./exp2_diffusion_revision/fixed_cv', 
+                  pattern='exp2_fits_fitall_tophalf*', full.names=T)
+xtop = do.call(bind_rows, lapply(paired_fits, read_fit)) %>%
+  mutate_at(c('t0','a','md','fd','sz','sd','dpsg','gd',
+              'objective','test_objective'), as.numeric) %>%
+  mutate(model=str_replace(model, 't0_a_md_fd_sz_sd', 'basemodel'))
+
+paired_fits = list.files(path='./exp2_diffusion_revision/fixed_cv', 
+                         pattern='exp2_fits_fitall_bottomhalf*', full.names=T)
+xbot = do.call(bind_rows, lapply(paired_fits, read_fit)) %>%
+  mutate_at(c('t0','a','md','fd','sz','sd','dpsg','gd',
+              'objective','test_objective'), as.numeric) %>%
+  mutate(model=str_replace(model, 't0_a_md_fd_sz_sd', 'basemodel'))
+
+paired_fits = list.files(path='./exp2_diffusion_revision/fixed_cv', 
+                        pattern='exp2_fits_baseline_group1_*', full.names=T)
+baseline1 = do.call(bind_rows, lapply(paired_fits, read_fit)) %>%
+  mutate_at(c('t0','a','md','fd','sz','sd','dpsg','gd',
+              'objective','test_objective'), as.numeric) %>%
+  mutate(model=str_replace(model, 't0_a_md_fd_sz_sd', 'basemodel'))
+
+paired_fits = list.files(path='./exp2_diffusion_revision/fixed_cv', 
+                        pattern='exp2_fits_baseline_group2_*', full.names=T)
+baseline2 = do.call(bind_rows, lapply(paired_fits, read_fit)) %>%
+  mutate_at(c('t0','a','md','fd','sz','sd','dpsg','gd',
+              'objective','test_objective'), as.numeric) %>%
+  mutate(model=str_replace(model, 'baseline_group2_', '')) %>%
+  mutate(model=str_replace(model, 't0_a_md_fd_sz_sd', 'basemodel'))
+
+xtop = xtop %>% select(fold, md, fd, gd, dpsg) %>% mutate(group='tophalf')
+xbot = xbot %>% select(fold, md, fd, gd, dpsg) %>% mutate(group='bottomhalf')
+baseline1 = baseline1 %>% select(fold, md, fd, gd, dpsg) %>% mutate(group='baseline1')
+baseline2 = baseline2 %>% select(fold, md, fd, gd, dpsg) %>% mutate(group='baseline2')
+
+# ratio
+xtop$md/xtop$fd - xbot$md/xbot$fd # -0.1357467
+boot_diffs = baseline1$md/baseline1$fd - baseline2$md/baseline2$fd
+mean(boot_diffs) # 0.002666068
+sort(boot_diffs)[25] # -0.1467574
+sort(boot_diffs)[975] # 0.1632713
+
+# gd
+xtop$gd - xbot$gd # -0.5795183
+boot_diffs = baseline1$gd - baseline2$gd 
+mean(boot_diffs) # 0.003557756
+sort(boot_diffs)[25] # -0.3003744
+sort(boot_diffs)[975] # 0.2943169
+
+# p
+xtop$dpsg - xbot$dpsg # -0.03226856
+boot_diffs = baseline1$dpsg - baseline2$dpsg 
+mean(boot_diffs) # -0.001861636
+sort(boot_diffs)[25] # -0.104487
+sort(boot_diffs)[975] # 0.0965046
+```
+
+```{r, fig.width=6, fig.height=3}
+tibble(fold=1:1000,
+       ratio=(baseline1$md/baseline1$fd-baseline2$md/baseline2$fd),
+       gd=baseline1$gd-baseline2$gd,
+       p=baseline1$dpsg-baseline2$dpsg) %>%
+  pivot_longer(c('ratio', 'gd', 'p'), names_to='param') %>%
+  mutate(param=factor(param, levels=c('ratio','gd','p'))) %>%
+  ggplot() +
+  geom_histogram(aes(x=value, color='baseline', fill='baseline')) +
+  geom_vline(data=tibble(ratio=(xtop$md/xtop$fd-xbot$md/xbot$fd),
+                          gd=(xtop$gd-xbot$gd),
+                          p=(xtop$dpsg-xbot$dpsg)) %>%
+                  pivot_longer(c('ratio', 'gd', 'p'), names_to='param') %>%
+                  mutate(param=factor(param, levels=c('ratio','gd','p'))),
+             mapping=aes(xintercept=value, color='observed')) +
+  geom_vline(data=tibble(ratio=-0.1467574, gd=-0.3003744, p=-0.104487) %>%
+                  pivot_longer(c('ratio', 'gd', 'p'), names_to='param') %>%
+                  mutate(param=factor(param, levels=c('ratio','gd','p'))),
+             mapping=aes(xintercept=value, color='baseline')) +
+  geom_vline(data=tibble(ratio=0.1632713, gd=0.2943169, p=0.0965046) %>%
+                  pivot_longer(c('ratio', 'gd', 'p'), names_to='param') %>%
+                  mutate(param=factor(param, levels=c('ratio','gd','p'))),
+             mapping=aes(xintercept=value, color='baseline')) +
+  facet_grid(~param) +
+  scale_color_manual(values=c(baseline='gray', observed=redblue[1]), name='param difference') +
+  scale_fill_manual(values=c(baseline='white', observed='white'), name='param difference')
+
+# ggsave(paste(plotout,'exp2_split_group_param_dist_fitall_1000cv.pdf', sep=''), bg='transparent')
 ```
 
 # combined figure for IA trials
