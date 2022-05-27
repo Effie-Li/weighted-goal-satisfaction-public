@@ -250,8 +250,200 @@ p1 + p2 + p3 +
   theme(axis.title = element_text(size=11))
  
 # ggsave(paste(plotout,'exp2.pdf', sep=''), bg='transparent')
-# ggsave(paste(plotout,'exp2_top.pdf', sep=''), bg='transparent')
-# ggsave(paste(plotout,'exp2_bottom.pdf', sep=''), bg='transparent')
+```
+
+## fig S3 unpacked for top and bottom acc gropus
+```{r}
+data.subgroup = data.main %>%
+  filter(subject %in% top_half) %>%
+  mutate(pt=planningTime/1000) %>%
+  group_by(subject) %>%
+  mutate(meanpt=mean(pt),
+         stdpt=sd(pt)) %>%
+  mutate(zpt=(pt-meanpt)/stdpt) %>%
+  ungroup() %>%
+  mutate(popmeanpt=mean(meanpt), 
+         popstdpt=mean(stdpt))
+
+p1.plotdata = data.subgroup %>%
+  filter(trialAdvType=='NT') %>%
+  mutate(totalAdv=factor(abs(totalAdv))) %>%
+  mutate(level = ifelse(level=='base', level, ifelse(goalLoc==1, 'subgoal: upper goal', 'subgoal: lower goal'))) %>%
+  mutate(level = str_wrap(level, width=8))
+
+p1.path = p1.plotdata %>%
+  group_by(subject, totalAdv, level) %>%
+  summarize(upperPathTaken=mean(pathTaken=='upper')) %>%
+  mutate(upperPathTakenProbit=qnorm(upperPathTaken)) %>%
+  mutate(upperPathTakenProbit = ifelse(upperPathTakenProbit > 3, 3,
+                                       upperPathTakenProbit)) %>%
+  mutate(upperPathTakenProbit = ifelse(upperPathTakenProbit < -3, -3,
+                                       upperPathTakenProbit)) %>%
+  ggplot(., mapping=aes(x=totalAdv, y=upperPathTakenProbit)) +
+  facet_grid(.~level) +
+  stat_summary(fun.data = "mean_cl_boot",
+               geom = "pointrange",
+               position = position_dodge(width=0.2),
+               size = .5,
+               fill = 'white',
+               color='black',
+               shape=24) +
+  labs(x='Total Path Difference',
+       y='Upper Path Taken \n(probit space)') +
+  coord_cartesian(ylim=c(-1.5, 3)) +
+  theme(legend.position=c(0.15, 0.85))
+
+p1.rt = p1.plotdata %>%
+  group_by(subject, level, totalAdv) %>%
+  summarize(medianzpt=median(zpt),
+            popmeanpt=mean(popmeanpt),
+            popstdpt=mean(popstdpt)) %>%
+  mutate(projectedmedianzpt=medianzpt*popstdpt+popmeanpt) %>%
+  ggplot(., mapping=aes(x=totalAdv, y=projectedmedianzpt)) +
+  facet_grid(.~level) +
+  stat_summary(fun.data = "mean_cl_boot",
+               geom = "pointrange",
+               position = position_dodge(width=0.2),
+               size = .5,
+               fill = 'white',
+               color='black',
+               shape=24) +
+  labs(x='Total Path Difference',
+       y='Projected Median\nz(First Move Response Time) (s)') +
+  coord_cartesian(ylim=c(1, 4.5)) +
+  theme(legend.position='none')
+```
+
+```{r}
+p2.plotdata = data.subgroup %>%
+  filter(trialAdvType=='IA') %>%
+  mutate(totalAdv=factor(abs(totalAdv)),
+         myopicQuantAdv=factor(abs(myopicQuantAdv), levels=c(1,2))) %>%
+  mutate(trialAdvType=as.character(trialAdvType)) %>%
+  mutate(trialAdvType=ifelse(trialAdvType=='IA', paste(trialAdvType,myopicQuantAdv,sep='-'),
+                             trialAdvType)) %>%
+  mutate(trialAdvType=factor(trialAdvType, levels=c('IA-1','IA-2'))) %>%
+  mutate(myopicGoalSameSide = ((myopicAdvPath=='upper')&(goalLoc==1)) |
+                              ((myopicAdvPath=='lower')&(goalLoc==9))) %>%
+  mutate(level=ifelse(level=='base', level, ifelse(myopicGoalSameSide, 
+                                                   'subgoal: goal same with mAdv',
+                                                   'subgoal: goal diff from mAdv'))) %>%
+  mutate(level=factor(level, levels=c('base','subgoal: goal diff from mAdv','subgoal: goal same with mAdv'))) %>%
+  mutate(level = str_wrap(level, width=12))
+
+p2.path = p2.plotdata %>%
+  mutate(pathFavorsMyopicAdv = as.numeric(pathStart==myopicAdvPath)) %>%
+  group_by(subject, totalAdv, trialAdvType, level) %>%
+  summarize(pathFavorsMyopicAdv=mean(pathFavorsMyopicAdv)) %>%
+  mutate(pathFavorsMyopicAdvProbit = qnorm(pathFavorsMyopicAdv)) %>%
+  mutate(pathFavorsMyopicAdvProbit = ifelse(pathFavorsMyopicAdvProbit > 3, 3,  # cap infs
+                                            pathFavorsMyopicAdvProbit)) %>%
+  mutate(pathFavorsMyopicAdvProbit = ifelse(pathFavorsMyopicAdvProbit < -3, -3,  # cap infs
+                                            pathFavorsMyopicAdvProbit)) %>%
+  ggplot(., mapping=aes(x=totalAdv, y=pathFavorsMyopicAdvProbit, color=trialAdvType)) +
+  facet_grid(.~level) +
+  stat_summary(fun.data = "mean_cl_boot",
+               geom = "pointrange",
+               position = position_dodge(width=0.2),
+               size = .5,
+               fill = 'white',
+               shape = 22) +
+  scale_color_manual(values=c(redblue[4], redblue[5]), name='') +
+  labs(x='Total Path Difference',
+       y='Path Favors Myopic Advantage\n(probit space)') +
+  coord_cartesian(ylim=c(-1.5, 3)) +
+  theme(legend.position='none')
+
+p2.rt = p2.plotdata %>%
+  group_by(subject, level, totalAdv, trialAdvType) %>%
+  summarize(medianzpt=median(zpt),
+            popmeanpt=mean(popmeanpt),
+            popstdpt=mean(popstdpt)) %>%
+  mutate(projectedmedianzpt=medianzpt*popstdpt+popmeanpt) %>%
+  ggplot(., mapping=aes(x=totalAdv, y=projectedmedianzpt, color=trialAdvType)) +
+  facet_grid(.~level) +
+  stat_summary(fun.data = "mean_cl_boot",
+               geom = "pointrange",
+               position = position_dodge(width=0.2),
+               size = .5,
+               fill = 'white',
+               shape = 22) +
+  scale_color_manual(values=c(redblue[4], redblue[5]), name='') +
+  labs(x='Total Path Difference',
+       y='Projected Median\nz(First Move Response Time) (s)') +
+  coord_cartesian(ylim=c(1, 4.5)) +
+  theme(legend.position='none')
+```
+
+```{r}
+p3.plotdata = data.subgroup %>%
+  filter(totalAdv!=0) %>%
+  mutate(absTotalAdv=factor(abs(totalAdv))) %>%
+  mutate(optimPathGoalConsistency = ((totalAdvPath=='upper')&(goalLoc==1)) |
+                                    ((totalAdvPath=='lower')&(goalLoc==9))) %>%
+  mutate(level=ifelse(level=='base', level, ifelse(optimPathGoalConsistency, 
+                                                   'subgoal: goal same with optimal path',
+                                                   'subgoal: goal diff from optimal path'))) %>%
+  mutate(level=factor(level, levels=c('base','subgoal: goal diff from optimal path','subgoal: goal same with optimal path'))) %>%
+  mutate(level = str_wrap(level, width=15))
+
+p3.path = p3.plotdata %>%
+  group_by(subject, absTotalAdv, trialAdvType, level) %>%
+  summarise(optimal=mean(pathStart==totalAdvPath)) %>%
+  mutate(optimalProbit = qnorm(optimal)) %>%
+  mutate(optimalProbit = ifelse(optimalProbit > 3, 3,  # cap infs
+                                optimalProbit)) %>%
+  mutate(optimalProbit = ifelse(optimalProbit < -3, -3,  # cap infs
+                                optimalProbit)) %>%
+  ggplot(., mapping=aes(x=absTotalAdv, y=optimalProbit, 
+                        fill=trialAdvType, shape=trialAdvType)) +
+  facet_grid(.~level) +
+  stat_summary(fun.data = "mean_cl_boot",
+               geom = "pointrange",
+               color = 'black',
+               position = position_dodge(width=0.3),
+               size = .5) +
+  labs(x='Total Path Difference',
+      y='Optimal Direction\n(probit space)') +
+  scale_fill_manual(values=c(redblue[5], redblue[2], 'white', redblue[5], redblue[2]),
+                    name='Adv. Type') +
+  scale_shape_manual(values=c(21,21,23,22,22),
+                    name='Adv. Type') +
+  coord_cartesian(ylim=c(-1.5, 3)) +
+  theme(legend.position='none')
+
+p3.rt = p3.plotdata %>%
+  group_by(subject, absTotalAdv, trialAdvType, level) %>%
+  summarize(medianzpt=median(zpt),
+            popmeanpt=mean(popmeanpt),
+            popstdpt=mean(popstdpt)) %>%
+  mutate(projectedmedianzpt=medianzpt*popstdpt+popmeanpt) %>%
+  ggplot(., mapping=aes(x=absTotalAdv, y=projectedmedianzpt, 
+                        fill=trialAdvType, shape=trialAdvType)) +
+  facet_grid(.~level) +
+  stat_summary(fun.data = "mean_cl_boot",
+               geom = "pointrange",
+               color = 'black',
+               position = position_dodge(width=0.3),
+               size = .5) +
+  scale_fill_manual(values=c(redblue[5], redblue[2], 'white', redblue[5], redblue[2]),
+                    name='Adv. Type') +
+  scale_shape_manual(values=c(21,21,23,22,22),
+                    name='Adv. Type') +
+  labs(x='Total Path Difference',
+       y='Projected Median\nz(First Move Response Time) (s)') +
+  coord_cartesian(ylim=c(1, 4.5)) +
+  theme(legend.position='none')
+```
+
+```{r, fig.width=10, fig.height=6}
+p1.path + p2.path + p3.path + p1.rt + p2.rt + p3.rt +
+  plot_annotation() +
+  plot_layout(ncol=3, widths = c(1,1.2,2.5)) &
+  theme(axis.title = element_text(size=11))
+ 
+# ggsave(paste(plotout,'exp2_top_unpacked.pdf', sep=''), bg='transparent')
+# ggsave(paste(plotout,'exp2_bottom_unpacked.pdf', sep=''), bg='transparent')
 ```
 
 ## create unique labels for each of 12 unique advantage mappings
@@ -436,6 +628,7 @@ p.ia.main = data.ia %>%
                                     ((myopicAdvPath=='lower')&(goalLoc==9)))) %>%
   mutate(trialType = ifelse(level=='base', 'base',
                      ifelse(myopicGoalSameSide, 'subgoal (goal on myopic side)', 'subgoal (goal on future side)'))) %>%
+  mutate(trialType = factor(trialType, levels = c('subgoal (goal on myopic side)','subgoal (goal on future side)','base'))) %>%
   group_by(subject, relativeAdv, trialType) %>%
   summarize(pathFavorsMyopicAdv = mean(pathStart==myopicAdvPath)) %>%
   mutate(pathFavorsMyopicAdvProbit = qnorm(pathFavorsMyopicAdv)) %>%
@@ -443,22 +636,63 @@ p.ia.main = data.ia %>%
                                             pathFavorsMyopicAdvProbit)) %>%
   mutate(pathFavorsMyopicAdvProbit = ifelse(pathFavorsMyopicAdvProbit < -3, -3,  # cap infs
                                             pathFavorsMyopicAdvProbit)) %>%
-  ggplot(data=., mapping=aes(x=relativeAdv, y=pathFavorsMyopicAdvProbit,
-                             fill=trialType, shape=trialType)) +
+  ungroup() %>%
+  mutate(jitter=ifelse(trialType=='base', 0, ifelse(trialType=='subgoal (goal on myopic side)', -0, 0))) %>%
+  ggplot(data=., mapping=aes(x=relativeAdv+jitter, y=pathFavorsMyopicAdvProbit,
+                             color=trialType, fill=trialType, shape=trialType)) +
   geom_hline(aes(yintercept=0), alpha=0.5, linetype='dashed') +
   stat_summary(fun.data = "mean_cl_boot",
+               geom = "line",
+               color = "gray",
+               size = .5) +
+  stat_summary(fun.data = "mean_cl_boot",
                geom = "pointrange",
-               color = "black",
-               size = .5,
-               position = position_jitter(width=0.15)) +
-  scale_color_manual(values=c(redblue[4],redblue[5],redblue[5]), name='Trial Type') +
-  scale_fill_manual(values=c(redblue[4],redblue[5],redblue[5]), name='Trial Type') +
-  scale_shape_manual(values=c(21,22,23), name='Trial Type') +
+               color = 'black',
+               size = .5) +
+  scale_fill_manual(values=c('black','black','white'), name='Trial Type') +
+  scale_shape_manual(values=c(23,22,21), name='Trial Type') +
   labs(x = 'Myopic/Future Relative Advantage',
        y = 'Path Favors Myopic Advantage\n(probit space)') +
   coord_cartesian(ylim=c(-2.7,2.7),
                   xlim=c(-2.3,2.3)) +
-  theme(legend.position=c(0.75, 0.25))
+  theme(legend.position=c(0.72, 0.15))
+
+p.ia.bot = data.ia %>%
+  mutate(myopicGoalSameSide = ifelse(level=='base', '',
+                                    ((myopicAdvPath=='upper')&(goalLoc==1)) |
+                                    ((myopicAdvPath=='lower')&(goalLoc==9)))) %>%
+  mutate(trialType = ifelse(level=='base', 'base',
+                     ifelse(myopicGoalSameSide, 'subgoal (goal on myopic side)', 'subgoal (goal on future side)'))) %>%
+  mutate(trialType = factor(trialType, levels = c('base','subgoal (goal on myopic side)','subgoal (goal on future side)'))) %>%
+  filter(! subject %in% top_half, level!='base') %>%
+  group_by(subject, relativeAdv, trialType) %>%
+  summarize(pathFavorsMyopicAdv = mean(pathStart==myopicAdvPath)) %>%
+  mutate(pathFavorsMyopicAdvProbit = qnorm(pathFavorsMyopicAdv)) %>%
+  mutate(pathFavorsMyopicAdvProbit = ifelse(pathFavorsMyopicAdvProbit > 3, 3,  # cap infs
+                                            pathFavorsMyopicAdvProbit)) %>%
+  mutate(pathFavorsMyopicAdvProbit = ifelse(pathFavorsMyopicAdvProbit < -3, -3,  # cap infs
+                                            pathFavorsMyopicAdvProbit)) %>%
+  ungroup() %>%
+  mutate(jitter=ifelse(trialType=='base', 0, ifelse(trialType=='subgoal (goal on myopic side)', -0, 0))) %>%
+  ggplot(data=., mapping=aes(x=relativeAdv+jitter, y=pathFavorsMyopicAdvProbit,
+                             fill=trialType, shape=trialType)) +
+  geom_hline(aes(yintercept=0), alpha=0.5, linetype='dashed') +
+  stat_summary(fun.data = "mean_cl_boot",
+               geom = "line",
+               color = "gray",
+               size = .5) +
+  stat_summary(fun.data = "mean_cl_boot",
+               geom = "pointrange",
+               color = "black",
+               fill = 'black',
+               size = .5) +
+  annotate(geom='text', x=-2, y=2, label='Less accurate\nparticipants', color='black', size=4, hjust=0) +
+  scale_shape_manual(values=c(23,22), name='Trial Type') +
+  labs(x = 'Myopic/Future Relative Advantage',
+       y = 'Path Favors Myopic Advantage\n(probit space)') +
+  coord_cartesian(ylim=c(-2.7,2.7),
+                  xlim=c(-2.3,2.3)) +
+  theme(legend.position=c(0.72, 0.15))
 ```
 
 ## Drift-diffusion model
@@ -838,7 +1072,7 @@ p.model.comp.full = ggplot() +
   annotate('text', label='*', x=1.23, y=0.4, size=6, hjust=0.5) +
   coord_cartesian(ylim=c(-40,2), xlim=c(0.5,2)) +
   geom_text(mapping=aes(x=0.2, y=0, label='baseline sNLL = 4013.10 (SD=114.45) '),
-            hjust=1, va='right', angle=90, size=2.7, color='black') +
+            hjust=1, va='right', angle=90, size=3, color='black') +
   geom_text(mapping=aes(x=0.2, y=1.6, label='without gd'),
             size=3.6, color='black') +
   geom_text(mapping=aes(x=0.5, y=1.6, label='|  with gd'),
@@ -1321,10 +1555,10 @@ tibble(fold=1:1000,
 ```
 
 # combined figure for IA trials
-```{r, fig.width=7.2, fig.height=5.6}
-( p.ia.main | p.model.comp.full) / (p.model.params | pweight) +
-  plot_layout(nrow=2, heights=c(1,1)) &
-  plot_annotation(tag_levels=list(c('A','B','C','','','D'))) &
+```{r, fig.width=10, fig.height=3}
+( p.ia.main | p.model.comp.full | p.model.params) +
+  plot_layout(nrow=1) &
+  plot_annotation(tag_levels=list(c('A','B','C'))) &
   theme(axis.title = element_text(size=10),
         legend.key.size=unit(0.6, 'line'),
         legend.title=element_text(size=9),
@@ -1332,6 +1566,20 @@ tibble(fold=1:1000,
         legend.background = element_blank())
 
 # ggsave(paste(plotout,'exp2_ia.pdf', sep=''), bg='transparent')
+```
+
+# combined figure for ID
+```{r, fig.width=10, fig.height=3}
+( p.ia.top | p.ia.bot | pweight) +
+  plot_layout(nrow=1) &
+  plot_annotation(tag_levels=list(c('A','B','C'))) &
+  theme(axis.title = element_text(size=10),
+        legend.key.size=unit(0.6, 'line'),
+        legend.title=element_text(size=9),
+        legend.text=element_text(size=9),
+        legend.background = element_blank())
+
+# ggsave(paste(plotout,'exp2_id.pdf', sep=''), bg='transparent')
 ```
 
 ```{r, fig.width=7.5, fig.height=4.2}
